@@ -15,17 +15,17 @@ import config
 
 class JobsPage(BasePage):
     """
-    Versão final da página de vagas, otimizada para velocidade e confiabilidade,
-    removendo pausas fixas e melhorando a espera da paginação.
+    Versão final da página de vagas, com lógica de filtro unificada e aprimorada
+    para garantir que todos os filtros se apliquem em ambos os modos de operação.
     """
     
     # --- Locators ---
     JOB_LIST_ITEM = (By.CSS_SELECTOR, "li[data-occludable-job-id]")
+    JOB_TITLE_LINK = (By.CSS_SELECTOR, "a.job-card-container__link")
     JOB_LOCATION_TEXT = (By.CSS_SELECTOR, "div.artdeco-entity-lockup__caption span[dir='ltr']")
     APPLIED_INDICATOR = (By.CSS_SELECTOR, ".job-card-container__footer-job-state")
     APPLY_BUTTON = (By.CSS_SELECTOR, "button.jobs-apply-button")
-    
-    # Locators do Modal
+    EASY_APPLY_TAG = (By.XPATH, ".//*[contains(text(), 'Candidatura simplificada')]")
     MODAL_CONTENT = (By.CSS_SELECTOR, ".jobs-easy-apply-modal__content")
     FORM_GROUPS = (By.CSS_SELECTOR, ".fb-dash-form-element")
     NEXT_BUTTON = (By.CSS_SELECTOR, "button[data-easy-apply-next-button]")
@@ -81,18 +81,18 @@ class JobsPage(BasePage):
                     raise InterruptedError("Sinal de parada recebido durante a pausa.")
             self.status_queue.put("Status: Retomando...")
 
-    def search_jobs(self, keywords: str, location: str, base_url: str):
-        self.status_queue.put(f"Buscando vagas para '{keywords}' em '{location}'.")
-        url = f"{base_url}?keywords={keywords.replace(' ', '%20')}&location={location}&f_AL=true"
+    def search_jobs(self, keywords: str, location: str, base_url: str, easy_apply_mode: bool = True):
+        filter_param = "true" if easy_apply_mode else "false"
+        mode_text = "Simplificada" if easy_apply_mode else "Normal"
+        self.status_queue.put(f"Buscando vagas para '{keywords}' em modo de Candidatura {mode_text}.")
+        url = f"{base_url}?keywords={keywords.replace(' ', '%20')}&location={location}&f_AL={filter_param}"
         self.open_url(url)
     
     def _handle_application_modal(self, curriculum_path: str) -> bool:
         max_steps = 7
         for step in range(max_steps):
             self._check_control_signals()
-            # MODIFICADO: Removido o sleep fixo, agora esperamos por elementos.
             self.wait.until(EC.presence_of_element_located(self.MODAL_CONTENT))
-
             try:
                 form_groups = self.driver.find_elements(*self.FORM_GROUPS)
                 for group in form_groups:
@@ -101,7 +101,6 @@ class JobsPage(BasePage):
                         question_text = label.text
                         if not question_text: continue
                         normalized_question = self._normalize_question(question_text)
-                        
                         answer_to_apply = None
                         if normalized_question in self.answers:
                             answer_to_apply = self.answers[normalized_question]
@@ -128,17 +127,14 @@ class JobsPage(BasePage):
                     except NoSuchElementException: continue
             except Exception as e:
                 self.status_queue.put(f"Erro ao processar perguntas: {e}")
-
             try:
                 upload_field = self.driver.find_element(*self.UPLOAD_INPUT)
                 if upload_field.is_displayed():
                     upload_field.send_keys(curriculum_path)
             except NoSuchElementException: pass
-
             try:
                 self._click(self.SUBMIT_BUTTON)
                 self.status_queue.put("Candidatura enviada com sucesso!")
-                # Espera a confirmação de "Candidatura enviada" aparecer antes de retornar
                 self.wait.until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Candidatura enviada')]")))
                 return True
             except TimeoutException:
@@ -155,20 +151,13 @@ class JobsPage(BasePage):
                     except TimeoutException:
                         self.status_queue.put("ERRO: Não foi possível encontrar 'Enviar', 'Revisar' ou 'Avançar'.")
                         return False
-        
         self.status_queue.put("ERRO: Excedido o número máximo de etapas.")
         return False
 
-    def apply_to_jobs_on_page(self, curriculum_path: str) -> bool:
+    def apply_to_jobs_on_page(self, curriculum_path: str, is_normal_mode: bool) -> bool:
         try:
             self.status_queue.put("Aguardando o carregamento da lista de vagas...")
             self.wait.until(EC.visibility_of_element_located(self.JOB_LIST_ITEM))
-            self.status_queue.put("Lista de vagas carregada.")
-            self.status_queue.put("Rolando a página para carregar mais vagas...")
-            for _ in range(3): 
-                self._check_control_signals()
-                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(1) # Pequena pausa para o scroll renderizar
             job_count = len(self.driver.find_elements(*self.JOB_LIST_ITEM))
             self.status_queue.put(f"Encontradas {job_count} vagas REAIS na página.")
         except TimeoutException:
@@ -190,22 +179,53 @@ class JobsPage(BasePage):
                     break
                 job = all_jobs[i]
 
+                # =======================================================================
+                # LÓGICA DE FILTRO UNIFICADA E REORDENADA
+                # =======================================================================
+
+                # Filtro 1: Já me candidatei a esta vaga ou a visualizei?
                 try:
                     applied_indicator = job.find_element(*self.APPLIED_INDICATOR)
-                    if "candidatou-se" in applied_indicator.text.lower():
-                        self.status_queue.put("Vaga já candidatada. Pulando...")
+                    status_text = applied_indicator.text.lower()
+                    if "candidatou-se" in status_text or "candidatura simplificada" in status_text:
+                        self.status_queue.put(f"Vaga já processada ({applied_indicator.text}). Pulando...")
                         continue
                 except NoSuchElementException:
                     pass
 
+                # Filtro 2: A localização corresponde às minhas preferências?
                 location_element = job.find_element(*self.JOB_LOCATION_TEXT)
                 location_text = location_element.text.lower()
-                
                 if not any(keyword in location_text for keyword in config.LOCATIONS_KEYWORDS):
                     self.status_queue.put(f"Pulando vaga. Localização '{location_element.text}' não corresponde ao filtro.")
                     continue
+                
+                # Se passou pelos filtros, agora decidimos a ação com base no modo
+                self.status_queue.put(f"Localização OK: '{location_element.text}'.")
 
-                self.status_queue.put(f"Localização OK: '{location_element.text}'. Processando...")
+                # Filtro 3 (Ação Final): O que fazer com esta vaga qualificada?
+                if is_normal_mode:
+                    try:
+                        job.find_element(*self.EASY_APPLY_TAG)
+                        self.status_queue.put("Vaga simplificada encontrada. Pulando no modo de busca normal.")
+                        continue
+                    except NoSuchElementException:
+                        try:
+                            main_window = self.driver.current_window_handle
+                            job_link_element = job.find_element(*self.JOB_TITLE_LINK)
+                            job_url = job_link_element.get_attribute('href')
+                            self.status_queue.put("VAGA NORMAL: Abrindo em nova aba para candidatura manual...")
+                            self.driver.switch_to.new_window('tab')
+                            self.driver.get(job_url)
+                            time.sleep(2)
+                            self.driver.switch_to.window(main_window)
+                            continue
+                        except Exception as e:
+                            self.status_queue.put(f"Não foi possível abrir a vaga normal em nova aba: {e}")
+                            continue
+                
+                # Se não for modo normal e passou por todos os filtros, tenta a candidatura.
+                self.status_queue.put("Processando candidatura simplificada...")
 
             except (NoSuchElementException, StaleElementReferenceException) as e:
                 self.status_queue.put(f"Item {i+1} não é uma vaga padrão ou está 'stale' ({e.__class__.__name__}). Pulando.")
@@ -214,7 +234,7 @@ class JobsPage(BasePage):
             modal_is_open = False
             try:
                 self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", job)
-                time.sleep(0.5) # Pequena pausa para o scroll
+                time.sleep(0.5)
                 job.click()
                 self.wait.until(EC.element_to_be_clickable(self.APPLY_BUTTON)).click()
                 modal_is_open = True
@@ -236,13 +256,15 @@ class JobsPage(BasePage):
                 if modal_is_open:
                     self.status_queue.put("Fechando modal de candidatura...")
                     try:
+                        time.sleep(2) 
                         close_button = self.wait.until(EC.element_to_be_clickable(self.CLOSE_MODAL_BUTTON))
                         close_button.click()
-                        time.sleep(1) # Pausa para o modal começar a fechar
+                        time.sleep(1)
                         try:
                             discard_button = self.driver.find_element(*self.DISCARD_BUTTON)
                             if discard_button.is_displayed():
                                 discard_button.click()
+                                self.status_queue.put("Confirmação de descarte clicada.")
                         except (NoSuchElementException, TimeoutException):
                             pass 
                     except Exception:
@@ -260,15 +282,11 @@ class JobsPage(BasePage):
             first_job_on_current_page = self._find_element(self.JOB_LIST_ITEM)
             self.status_queue.put("Clicando em 'Avançar'...")
             self.driver.execute_script("arguments[0].click();", next_button)
-            
-            # ESPERA DUPLA: Espera o conteúdo antigo sumir E o novo aparecer.
             self.status_queue.put("Aguardando nova página carregar...")
             self.wait.until(EC.staleness_of(first_job_on_current_page))
             self.wait.until(EC.visibility_of_element_located(self.JOB_LIST_ITEM))
             self.status_queue.put("Nova página carregada.")
-            
             return True
-
         except (TimeoutException, NoSuchElementException):
             self.status_queue.put("Botão 'Avançar' não encontrado. Fim dos resultados.")
             return False

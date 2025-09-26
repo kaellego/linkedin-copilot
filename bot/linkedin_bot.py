@@ -1,114 +1,106 @@
 # bot/linkedin_bot.py
-import json
-import os
 import time
 import threading
+import json
+import os
 from queue import Queue
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.remote.webdriver import WebDriver
 from pages.login_page import LoginPage
-from pages.jobs_page import JobsPage
+from pages.job_search_page import JobSearchPage
 import config
 
 class LinkedinBot:
     """
     Orquestra o fluxo completo de automação do LinkedIn, com gerenciamento de sessão,
-    paginação e controle externo por uma interface gráfica (via threads).
+    paginação e controle externo por uma interface gráfica (via threads),
+    operando em um modo de candidatura definido pelo usuário na inicialização.
     """
-
+    
     # Locator para um elemento que só existe quando o usuário está logado.
     # Este seletor aponta para o botão/link que abre o menu do perfil ("Eu").
     LOGGED_IN_INDICATOR = (By.CSS_SELECTOR, "button.global-nav__primary-link[aria-expanded]")
 
-    def __init__(self, driver: WebDriver, status_queue: Queue, answer_queue: Queue, pause_event: threading.Event, stop_event: threading.Event):
+    def __init__(self, driver: WebDriver, status_queue: Queue, answer_queue: Queue, pause_event: threading.Event, stop_event: threading.Event, is_normal_apply_mode: bool):
         self.driver = driver
         self.status_queue = status_queue
-        # A answer_queue não é usada diretamente aqui, mas precisa ser passada para a JobsPage
-        
         self.pause_event = pause_event
         self.stop_event = stop_event
-        self.login_page = LoginPage(self.driver, self.status_queue)
-        self.jobs_page = JobsPage(self.driver, status_queue, answer_queue, self.pause_event, self.stop_event)
-    
-    def _save_session(self):
-        """Salva os cookies de sessão em um arquivo JSON."""
-        with open(config.SESSION_FILE, 'w') as file:
-            json.dump(self.driver.get_cookies(), file)
-        self.status_queue.put("Sessão salva com sucesso.")
-
-    def _load_session(self) -> bool:
-        """Carrega os cookies de sessão de um arquivo JSON, se existir."""
-        if not os.path.exists(config.SESSION_FILE):
-            return False
         
-        with open(config.SESSION_FILE, 'r') as file:
-            cookies = json.load(file)
-            for cookie in cookies:
-                if 'sameSite' in cookie and cookie['sameSite'] not in ['Strict', 'Lax', 'None']:
-                    cookie['sameSite'] = 'None'
-                self.driver.add_cookie(cookie)
-        return True
+        # O modo de operação agora é definido na inicialização
+        self.is_normal_apply_mode = is_normal_apply_mode
+        self.easy_apply_limit_reached = False # Estado interno para controle de limite
+
+        # Instancia as páginas, passando os objetos de controle necessários
+        self.login_page = LoginPage(self.driver, self.status_queue)
+        self.job_search_page = JobSearchPage(self.driver, status_queue, answer_queue, self.pause_event, self.stop_event)
 
     def _is_logged_in(self) -> bool:
         """
         Verifica se a sessão é válida procurando por um elemento específico
-        da interface de usuário logada, como o ícone do perfil.
+        da interface de usuário logada.
         """
         try:
-            # Não força a navegação. Apenas verifica a página atual.
-            # Espera no máximo 5 segundos pelo elemento aparecer.
+            # Usa um tempo de espera curto para uma verificação rápida
             wait = self.login_page.wait
             wait.until(EC.presence_of_element_located(self.LOGGED_IN_INDICATOR))
             return True
         except TimeoutException:
-            # Se o elemento não for encontrado após 5 segundos, não estamos logados.
             return False
 
     def run(self):
         """
-        Executa o fluxo completo do bot, incluindo login/sessão, busca e o loop de paginação
-        que se recupera de recarregamentos de página.
+        Executa o fluxo completo do bot, incluindo login/sessão, busca e o loop de paginação.
         """
         try:
             self.status_queue.put("Iniciando o Copiloto LinkedIn...")
             
-            # --- Etapa 1: Verificação de Login Aprimorada ---
+            # --- Etapa 1: Verificação de Login ---
             self.status_queue.put("Verificando status do login na página atual...")
             if "linkedin.com" not in self.driver.current_url:
                 self.driver.get("https://www.linkedin.com/feed/")
                 time.sleep(2)
 
-            if self._is_logged_in():
-                self.status_queue.put("Sessão válida detectada. Login pulado.")
-            else:
-                self.status_queue.put("Nenhuma sessão válida detectada. Tentando realizar novo login...")
-                self.driver.get(config.URL_LOGIN)
-                self.login_page.login(config.LINKEDIN_EMAIL, config.LINKEDIN_SENHA)
-                time.sleep(5) 
-                if not self._is_logged_in():
-                    self.status_queue.put("ERRO: O login falhou. Verifique suas credenciais no .env e a página do LinkedIn.")
-                    return
-                self._save_session()
+            if not self._is_logged_in():
+                self.status_queue.put("ERRO: O navegador não está logado no LinkedIn. Por favor, faça o login manualmente e reinicie o robô.")
+                return
 
-            # --- Etapa 2: Busca Inicial de Vagas ---
-            self.jobs_page.search_jobs(config.PALAVRAS_CHAVE, config.LOCALIZACAO, config.URL_BASE_VAGAS)
+            self.status_queue.put("Sessão válida detectada. Login pulado.")
             
-            # --- Etapa 3: Loop de Paginação com Recuperação de Recarregamento ---
+            # --- Etapa 2: Busca Inicial de Vagas de acordo com o modo selecionado ---
+            self.job_search_page.search_jobs(
+                config.PALAVRAS_CHAVE,
+                config.LOCALIZACAO,
+                config.URL_BASE_VAGAS,
+                easy_apply_mode=not self.is_normal_apply_mode
+            )
+            
+            # --- Etapa 3: Loop de Paginação e Candidatura ---
             page_number = 1
             while True:
-                self.jobs_page._check_control_signals()
+                self.job_search_page._check_control_signals()
                 self.status_queue.put(f"================== PROCESSANDO PÁGINA {page_number} ==================")
                 
-                application_made = self.jobs_page.apply_to_jobs_on_page(config.CAMINHO_CURRICULO)
+                # Processa as vagas na página, passando o modo de operação
+                status = self.job_search_page.apply_to_jobs_on_page(config.CAMINHO_CURRICULO, self.is_normal_apply_mode)
                 
-                if application_made:
-                    self.status_queue.put("Candidatura realizada. Re-analisando a página atual devido ao recarregamento...")
-                    time.sleep(5) # Dê um tempo extra para a página recarregar completamente
+                if status == "LIMIT_REACHED":
+                    self.status_queue.put("!!! LIMITE DE CANDIDATURAS SIMPLIFICADAS ATINGIDO !!!")
+                    self.is_normal_apply_mode = True # Força a mudança para o modo normal
+                    self.status_queue.put("Trocando para o modo de busca de vagas normais e reiniciando a busca...")
+                    self.job_search_page.search_jobs(config.PALAVRAS_CHAVE, config.LOCALIZACAO, config.URL_BASE_VAGAS, easy_apply_mode=False)
+                    page_number = 1
                     continue
 
-                can_go_next = self.jobs_page.go_to_next_page()
+                if status == "PAGE_RELOADED":
+                    self.status_queue.put("Candidatura realizada. Re-analisando a página atual devido ao recarregamento...")
+                    continue
+
+                # Se a página foi processada normalmente, tenta ir para a próxima.
+                can_go_next = self.job_search_page.go_to_next_page()
+                
                 if can_go_next:
                     page_number += 1
                 else:
