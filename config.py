@@ -29,6 +29,7 @@ URL_FEED = "https://www.linkedin.com/feed/"
 # --- ARQUIVOS DE CONTROLE ---
 ANSWERS_FILE = "answers.json"
 SESSION_FILE = "linkedin_session.json"
+APPLIED_JOBS_FILE = "applied_jobs.json"
 
 # --- Validações ---
 if not all([LINKEDIN_EMAIL, LINKEDIN_SENHA, CAMINHO_CURRICULO]):

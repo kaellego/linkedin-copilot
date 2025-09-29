@@ -9,25 +9,33 @@ import time
 
 class BasePage:
     """
-    Classe base para todas as outras páginas, agora com funcionalidades
-    de depuração visual (destaque de elementos).
+    Classe base para todas as outras páginas, com funcionalidades
+    de interação e depuração visual (destaque de elementos).
     """
     
     def __init__(self, driver: WebDriver):
         self.driver = driver
-        self.wait = WebDriverWait(self.driver, 20)
+        # Um tempo de espera de 25 segundos é um bom equilíbrio entre velocidade e robustez.
+        self.wait = WebDriverWait(self.driver, 25)
 
     def _highlight_element(self, element: WebElement, color: str = 'red'):
         """Aplica um destaque visual a um elemento usando JavaScript."""
-        original_style = element.get_attribute('style')
-        style_string = f"border: 3px dashed {color};"
-        self.driver.execute_script("arguments[0].setAttribute('style', arguments[1]);", element, style_string)
-        # Retorna o estilo original para que possamos restaurá-lo depois
-        return original_style
+        try:
+            original_style = element.get_attribute('style')
+            style_string = f"border: 3px dashed {color};"
+            self.driver.execute_script("arguments[0].setAttribute('style', arguments[1]);", element, style_string)
+            return original_style
+        except:
+            # Se o elemento se tornar 'stale' durante o highlight, ignora.
+            return ""
 
     def _unhighlight_element(self, element: WebElement, original_style: str):
         """Remove o destaque de um elemento, restaurando seu estilo original."""
-        self.driver.execute_script("arguments[0].setAttribute('style', arguments[1]);", element, original_style)
+        try:
+            self.driver.execute_script("arguments[0].setAttribute('style', arguments[1]);", element, original_style)
+        except:
+            # Se o elemento se tornar 'stale', não há o que limpar.
+            pass
 
     def _find_element(self, locator: Tuple[str, str]) -> WebElement:
         """Encontra e retorna um elemento esperando ele estar visível."""
@@ -40,7 +48,7 @@ class BasePage:
         """Espera um elemento ser clicável, o destaca, e então clica nele."""
         element = self.wait.until(EC.element_to_be_clickable(locator))
         original_style = self._highlight_element(element)
-        time.sleep(0.3) # Pequena pausa para o olho humano ver o destaque
+        time.sleep(0.3)
         element.click()
         self._unhighlight_element(element, original_style)
 
