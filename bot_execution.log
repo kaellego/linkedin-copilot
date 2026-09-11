@@ -1,0 +1,75 @@
+2026-09-11 19:29:29 - INFO - Iniciando processo do Bot.
+2026-09-11 19:29:29 - INFO - Filtros - Palavras-chave: 'Analista de infraestrutura', Localização: 'Goiânia'
+2026-09-11 19:29:30 - INFO - Carregando histórico de vagas aplicadas...
+2026-09-11 19:29:30 - INFO - Iniciando o Copiloto LinkedIn...
+2026-09-11 19:29:30 - INFO - Verificando status do login na página atual...
+2026-09-11 19:29:44 - WARNING - Bot parado pelo usuário.
+2026-09-11 19:29:55 - ERROR - ERRO: O navegador não está logado no LinkedIn. Por favor, faça o login manualmente e reinicie o robô.
+2026-09-11 19:29:55 - INFO - O robô terminou. Você pode fechar o navegador manualmente.
+2026-09-11 19:29:56 - INFO - --- THREAD DO BOT ENCERRADA ---
+2026-09-11 19:29:56 - INFO - Thread do bot encerrada.
+2026-09-11 19:30:04 - INFO - Iniciando processo do Bot.
+2026-09-11 19:30:04 - INFO - Filtros - Palavras-chave: 'Analista de infraestrutura', Localização: 'Goiânia'
+2026-09-11 19:30:05 - INFO - Carregando histórico de vagas aplicadas...
+2026-09-11 19:30:05 - INFO - Iniciando o Copiloto LinkedIn...
+2026-09-11 19:30:06 - INFO - Verificando status do login na página atual...
+2026-09-11 19:30:06 - WARNING - Bot parado pelo usuário.
+2026-09-11 19:30:09 - ERROR - ERRO FATAL: Message: invalid session id: session deleted as the browser has closed the connection
+from disconnected: not connected to DevTools
+  (Session info: chrome=153.0.8010.36); For documentation on this error, please visit: https://www.selenium.dev/documentation/webdriver/troubleshooting/errors#invalidsessionidexception
+Stacktrace:
+	chromedriver!GetHandleVerifier [0x7ff78543ff25+5ae5]
+	chromedriver!(No symbol) [0x7ff785362210]
+	chromedriver!(No symbol) [0x7ff785184a9d]
+	chromedriver!(No symbol) [0x7ff785170432]
+	chromedriver!(No symbol) [0x7ff785196116]
+	chromedriver!(No symbol) [0x7ff785211260]
+	chromedriver!(No symbol) [0x7ff78522f9ad]
+	chromedriver!(No symbol) [0x7ff7851d2202]
+	chromedriver!(No symbol) [0x7ff7851d3013]
+	chromedriver!GetHandleVerifier [0x7ff785864231+429df1]
+	chromedriver!GetHandleVerifier [0x7ff78588fce7+4558a7]
+	chromedriver!GetHandleVerifier [0x7ff78588413e+449cfe]
+	chromedriver!GetHandleVerifier [0x7ff78553c9ce+10258e]
+	chromedriver!(No symbol) [0x7ff785370545]
+	chromedriver!(No symbol) [0x7ff78536b6a4]
+	chromedriver!(No symbol) [0x7ff78536b834]
+	chromedriver!(No symbol) [0x7ff78535601c]
+	KERNEL32!BaseThreadInitThunk [0x7fff403fcd87+17]
+	ntdll!RtlUserThreadStart [0x7fff4204caec+2c]
+
+2026-09-11 19:30:09 - INFO - Falha ao salvar screenshot: Message: invalid session id; For documentation on this error, please visit: https://www.selenium.dev/documentation/webdriver/troubleshooting/errors#invalidsessionidexception
+Stacktrace:
+	chromedriver!GetHandleVerifier [0x7ff78543ff25+5ae5]
+	chromedriver!(No symbol) [0x7ff785362210]
+	chromedriver!(No symbol) [0x7ff785184896]
+	chromedriver!(No symbol) [0x7ff7851d1303]
+	chromedriver!(No symbol) [0x7ff785209802]
+	chromedriver!(No symbol) [0x7ff7852035d2]
+	chromedriver!(No symbol) [0x7ff785202d62]
+	chromedriver!(No symbol) [0x7ff78514cddb]
+	chromedriver!(No symbol) [0x7ff78514d432]
+	chromedriver!(No symbol) [0x7ff78514da65]
+	chromedriver!GetHandleVerifier [0x7ff785864231+429df1]
+	chromedriver!GetHandleVerifier [0x7ff78588fce7+4558a7]
+	chromedriver!GetHandleVerifier [0x7ff78588413e+449cfe]
+	chromedriver!GetHandleVerifier [0x7ff78553c9ce+10258e]
+	chromedriver!(No symbol) [0x7ff785370545]
+	chromedriver!(No symbol) [0x7ff78514c20e]
+	chromedriver!GetHandleVerifier [0x7ff7858eb86f+4b142f]
+	KERNEL32!BaseThreadInitThunk [0x7fff403fcd87+17]
+	ntdll!RtlUserThreadStart [0x7fff4204caec+2c]
+
+2026-09-11 19:30:09 - INFO - O robô terminou. Você pode fechar o navegador manualmente.
+2026-09-11 19:30:09 - INFO - --- THREAD DO BOT ENCERRADA ---
+2026-09-11 19:30:09 - INFO - Thread do bot encerrada.
+2026-09-11 19:30:10 - INFO - Iniciando processo do Bot.
+2026-09-11 19:30:10 - INFO - Filtros - Palavras-chave: 'Analista de infraestrutura', Localização: 'Goiânia'
+2026-09-11 19:30:19 - INFO - Carregando histórico de vagas aplicadas...
+2026-09-11 19:30:20 - INFO - Iniciando o Copiloto LinkedIn...
+2026-09-11 19:30:20 - INFO - Verificando status do login na página atual...
+2026-09-11 19:30:45 - ERROR - ERRO: O navegador não está logado no LinkedIn. Por favor, faça o login manualmente e reinicie o robô.
+2026-09-11 19:30:45 - INFO - O robô terminou. Você pode fechar o navegador manualmente.
+2026-09-11 19:30:45 - INFO - --- THREAD DO BOT ENCERRADA ---
+2026-09-11 19:30:45 - INFO - Thread do bot encerrada.
+2026-09-11 19:30:49 - INFO - Aplicação encerrada.

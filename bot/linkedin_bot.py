@@ -17,7 +17,7 @@ class LinkedinBot:
     Orquestrador principal do robô. Gerencia o estado (modo de operação) e
     chama os métodos corretos da JobSearchPage (process_easy_apply_jobs ou process_normal_jobs).
     """
-    LOGGED_IN_INDICATOR = (By.CSS_SELECTOR, "button.global-nav__primary-link[aria-expanded]")
+    LOGGED_IN_INDICATOR = (By.CSS_SELECTOR, "div[data-testid='primary-nav']")
 
     def __init__(self, driver: WebDriver, status_queue: Queue, answer_queue: Queue, pause_event: threading.Event, stop_event: threading.Event, is_normal_apply_mode: bool):
         self.driver = driver

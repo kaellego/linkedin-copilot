@@ -8,6 +8,7 @@ import socket
 import subprocess
 from browser.driver_factory import create_driver
 from bot.linkedin_bot import LinkedinBot
+from services.ai_service import AIService
 import config # Importa o config
 
 def bot_thread_worker(status_queue, answer_queue, pause_event, stop_event, is_normal_apply_mode):

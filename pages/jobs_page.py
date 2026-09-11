@@ -25,7 +25,10 @@ class JobsPage(BasePage):
     JOB_LOCATION_TEXT = (By.CSS_SELECTOR, "div.artdeco-entity-lockup__caption span[dir='ltr']")
     APPLIED_INDICATOR = (By.CSS_SELECTOR, ".job-card-container__footer-job-state")
     APPLY_BUTTON = (By.CSS_SELECTOR, "button.jobs-apply-button")
-    EASY_APPLY_TAG = (By.XPATH, ".//*[contains(text(), 'Candidatura simplificada')]")
+    
+    # MODIFICAÇÃO AQUI: Seletor mais específico para a tag de candidatura simplificada
+    EASY_APPLY_TAG = (By.XPATH, ".//li[contains(@class, 'job-card-container__footer-item') and contains(., 'Candidatura simplificada')]")
+    
     MODAL_CONTENT = (By.CSS_SELECTOR, ".jobs-easy-apply-modal__content")
     FORM_GROUPS = (By.CSS_SELECTOR, ".fb-dash-form-element")
     NEXT_BUTTON = (By.CSS_SELECTOR, "button[data-easy-apply-next-button]")
@@ -159,7 +162,7 @@ class JobsPage(BasePage):
             self.status_queue.put("Aguardando o carregamento da lista de vagas...")
             self.wait.until(EC.visibility_of_element_located(self.JOB_LIST_ITEM))
             job_count = len(self.driver.find_elements(*self.JOB_LIST_ITEM))
-            self.status_queue.put(f"Encontradas {job_count} vagas REAIS na página.")
+            self.status_queue.put(f"Encontradas {job_count} vagas na página.")
         except TimeoutException:
             self.status_queue.put("ERRO: A lista de vagas não carregou em 20 segundos.")
             timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -175,15 +178,11 @@ class JobsPage(BasePage):
             try:
                 all_jobs = self.driver.find_elements(*self.JOB_LIST_ITEM)
                 if i >= len(all_jobs):
-                    self.status_queue.put("A lista de vagas mudou. Interrompendo página.")
+                    self.status_queue.put("A lista de vagas mudou. Reanalisando a página.")
                     break
                 job = all_jobs[i]
 
-                # =======================================================================
-                # LÓGICA DE FILTRO UNIFICADA E REORDENADA
-                # =======================================================================
-
-                # Filtro 1: Já me candidatei a esta vaga ou a visualizei?
+                # --- Filtro 1: Vaga já processada? ---
                 try:
                     applied_indicator = job.find_element(*self.APPLIED_INDICATOR)
                     status_text = applied_indicator.text.lower()
@@ -193,23 +192,35 @@ class JobsPage(BasePage):
                 except NoSuchElementException:
                     pass
 
-                # Filtro 2: A localização corresponde às minhas preferências?
+                # --- Filtro 2: Localização corresponde? ---
                 location_element = job.find_element(*self.JOB_LOCATION_TEXT)
                 location_text = location_element.text.lower()
                 if not any(keyword in location_text for keyword in config.LOCATIONS_KEYWORDS):
                     self.status_queue.put(f"Pulando vaga. Localização '{location_element.text}' não corresponde ao filtro.")
                     continue
                 
-                # Se passou pelos filtros, agora decidimos a ação com base no modo
                 self.status_queue.put(f"Localização OK: '{location_element.text}'.")
 
-                # Filtro 3 (Ação Final): O que fazer com esta vaga qualificada?
+                # =======================================================================
+                # LÓGICA DE FILTRO MODIFICADA E MAIS EXPLÍCITA
+                # =======================================================================
+                
+                # Primeiro, determinamos se a vaga é de fato simplificada
+                is_job_simplified = False
+                try:
+                    job.find_element(*self.EASY_APPLY_TAG)
+                    is_job_simplified = True
+                except NoSuchElementException:
+                    pass # is_job_simplified continua False
+
+                # Agora, aplicamos a lógica com base no modo de operação
                 if is_normal_mode:
-                    try:
-                        job.find_element(*self.EASY_APPLY_TAG)
-                        self.status_queue.put("Vaga simplificada encontrada. Pulando no modo de busca normal.")
+                    # MODO NORMAL: O usuário quer IGNORAR vagas simplificadas.
+                    if is_job_simplified:
+                        self.status_queue.put("Vaga simplificada encontrada. Pulando, conforme solicitado.")
                         continue
-                    except NoSuchElementException:
+                    else:
+                        # É uma vaga normal e estamos no modo normal. AÇÃO: Abrir em nova aba.
                         try:
                             main_window = self.driver.current_window_handle
                             job_link_element = job.find_element(*self.JOB_TITLE_LINK)
@@ -217,20 +228,26 @@ class JobsPage(BasePage):
                             self.status_queue.put("VAGA NORMAL: Abrindo em nova aba para candidatura manual...")
                             self.driver.switch_to.new_window('tab')
                             self.driver.get(job_url)
-                            time.sleep(2)
+                            time.sleep(2) # Pausa para o usuário ver a aba
                             self.driver.switch_to.window(main_window)
-                            continue
+                            continue # Pula para a próxima vaga da lista
                         except Exception as e:
                             self.status_queue.put(f"Não foi possível abrir a vaga normal em nova aba: {e}")
                             continue
                 
-                # Se não for modo normal e passou por todos os filtros, tenta a candidatura.
-                self.status_queue.put("Processando candidatura simplificada...")
+                else: # MODO SIMPLIFICADO: O usuário quer APENAS as vagas simplificadas.
+                    if not is_job_simplified:
+                        self.status_queue.put("Vaga normal encontrada. Pulando no modo de busca simplificada.")
+                        continue
+                    # Se chegamos aqui, a vaga É simplificada e estamos no modo simplificado.
+                    self.status_queue.put("Vaga simplificada qualificada. Prosseguindo com a candidatura...")
+
 
             except (NoSuchElementException, StaleElementReferenceException) as e:
                 self.status_queue.put(f"Item {i+1} não é uma vaga padrão ou está 'stale' ({e.__class__.__name__}). Pulando.")
                 continue
             
+            # Se a vaga passou por todos os filtros, o código continua aqui para a candidatura
             modal_is_open = False
             try:
                 self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", job)
@@ -242,15 +259,15 @@ class JobsPage(BasePage):
                 success = self._handle_application_modal(curriculum_path)
                 
                 if success:
-                    return True
+                    return True # Se uma candidatura for bem-sucedida, pare e espere o próximo comando
                 else:
-                    self.status_queue.put("Candidatura falhou ou foi pulada.")
+                    self.status_queue.put("Candidatura falhou ou foi pulada pelo usuário.")
             
             except InterruptedError as e:
                 self.status_queue.put(str(e))
                 break 
             except Exception as e:
-                self.status_queue.put(f"ERRO ao processar vaga: {e}.")
+                self.status_queue.put(f"ERRO ao processar vaga {i+1}: {e}.")
             
             finally:
                 if modal_is_open:

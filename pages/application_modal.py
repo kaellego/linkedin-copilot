@@ -44,6 +44,7 @@ class ApplicationModal(BasePage):
         self.pause_event = pause_event
         self.stop_event = stop_event
         self.answers = self._load_answers()
+        self.ai_service = AIService(api_key=getattr(config, "GEMINI_API_KEY", None))
 
     def _load_answers(self) -> dict:
         """Carrega o arquivo de respostas conhecidas."""
@@ -283,7 +284,18 @@ class ApplicationModal(BasePage):
                 elif "perguntas adicionais" in current_title:
                     self.status_queue.put("Processando: Perguntas Adicionais...")
                     self._handle_questions_screen()
-                    self._click(self.REVIEW_BUTTON)
+                    try:
+                        self._click(self.REVIEW_BUTTON)
+                    except Exception:
+                        self._click(self.NEXT_BUTTON)
+
+                elif "autorização de trabalho" in current_title:
+                    self.status_queue.put("Processando: Autorização de trabalho...")
+                    self._handle_questions_screen()
+                    try:
+                        self._click(self.REVIEW_BUTTON)
+                    except Exception:
+                        self._click(self.NEXT_BUTTON)
 
                 elif "additional questions" in current_title:
                     self.status_queue.put("Processando: Perguntas Adicionais...")

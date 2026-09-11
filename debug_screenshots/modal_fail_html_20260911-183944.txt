@@ -1,0 +1,129 @@
+<div id="ember530" class="artdeco-modal__content ember-view">
+  <div class="display-flex flex-column justify-space-between full-height">
+    <div>
+        
+
+  <span class="jpac-modal-header-icon">
+    <svg role="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" data-supported-dps="64x64" data-test-icon="signal-success">
+<!---->  <svg display="var(--hue-web-svg-display-dark)">
+    <image href="https://static.licdn.com/aero-v1/sc/h/8uv7nlh1wh8x23p16inejnp8d" x="0" y="0" width="64" height="64"></image>
+  </svg>
+
+  <svg display="var(--hue-web-svg-display-light)">
+    <image href="https://static.licdn.com/aero-v1/sc/h/2y2u2mhlct0k9eme9b15wkljx" x="0" y="0" width="64" height="64"></image>
+  </svg>
+</svg>
+  </span>
+  <h3 class="jpac-modal-header t-20 t-bold">
+    Sua candidatura na UPX AI Cybersecurity foi enviada.
+  </h3>
+
+
+      <p class="t-14 t-black--light text-align-center mb6">
+        Você pode acompanhar sua candidatura na guia “Candidaturas enviadas“ em Minhas vagas
+      </p>
+    </div>
+    <div>
+      
+      <div>
+          
+      <div class="
+              
+              
+              " data-view-name="seeker-next-best-action-card">
+        <div class="job-seeker-nba-single-card">
+          <div class="
+              
+              full-width">
+            <div class="job-seeker-nba-single-card-container">
+<!---->
+<!---->
+<!---->
+                      
+    <hr class="artdeco-divider">
+
+    
+    
+        
+          <div>
+            <div>
+                <h3 class="text-heading-large">
+                  <!---->Marque 3 vagas como suas preferenciais todos os meses com Premium<!---->
+                </h3>
+
+                <p class="text-body-small mt2">
+                  <!---->Tenha até 3 vezes mais chances de contratação<!---->
+                </p>
+            </div>
+
+            <div class="pv5">
+              <div id="ember531" class="job-seeker-nba-premium-upsell-entity-lockup artdeco-entity-lockup artdeco-entity-lockup--size-3 ember-view">
+                <div class="job-seeker-nba-premium-upsell-entity-lockup__header">O que o empregador verá</div>
+
+                <div class="display-flex p2">
+
+                  <div id="ember532" class="artdeco-entity-lockup__image artdeco-entity-lockup__image--type-circle ember-view" type="circle">
+                    <img width="48" title="Wellington Soares de Moraes" src="https://media.licdn.com/dms/image/v2/D4D03AQHUvIvuGJKqvQ/profile-displayphoto-scale_100_100/B4DZzJS6oCHwAc-/0/1772903705709?e=1790812800&amp;v=beta&amp;t=Td-ooN6y2Dq6f88zReQYC7XlDpTma7tjrmTqlSltxiU" loading="lazy" height="48" alt="Wellington Soares de Moraes" id="ember533" class="evi-image lazy-image ember-view">
+                  
+</div>
+
+                  <div id="ember534" class="artdeco-entity-lockup__content ember-view">
+
+                    <div id="ember535" class="artdeco-entity-lockup__title ember-view">
+                      Wellington Soares de Moraes
+                    
+</div>
+
+                    <div id="ember536" class="artdeco-entity-lockup__subtitle ember-view">
+                      Especialista em Segurança Cibernética | Administração de servidores Windows e Linux
+                    </div>
+
+                      <div id="ember537" class="artdeco-entity-lockup__metadata ember-view">
+                        Goiânia, Goiás, Brasil
+                      </div>
+
+                    <div id="ember538" class="artdeco-entity-lockup__caption ember-view">
+                      <div class="display-flex align-items-center mt1">
+                        <svg role="none" aria-hidden="true" class="job-seeker-nba-premium-upsell-entity-lockup__caption--marker" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" data-supported-dps="24x24" data-test-icon="starburst-medium">
+<!---->    
+    <use href="#starburst-medium" width="24" height="24"></use>
+</svg>
+
+                        <div class="text-body-small ph1">
+                          Vaga marcada como preferencial
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              
+</div>
+            </div>
+
+              <div id="ember539" class="artdeco-modal__actionbar ember-view job-seeker-nba--modal-footer">
+                <div>
+                  <a class="xujgHlmAyIhbfbQKtWQPtETDNqGETKStyVYL  artdeco-button artdeco-button--premium artdeco-button--secondary " href="http://www.linkedin.com/premium/products/?upsellOrderOrigin=Tracking%3Av1%3Apremium_job_post_apply_top_choice_upsell%3AJob+Seeker%3AIn-Product&amp;utype=job&amp;referenceId=%2BG5PHiUASNGiXU30qnA7DA%3D%3D&amp;isSS=false&amp;upsellSlotId=JOB_POST_APPLY_TOP_CHOICE_ACTION&amp;destRedirectURL=https%3A%2F%2Fwww.linkedin.com%2Fjobs%2Fsearch%2Fpost-apply%2Fnext-best-action%2F%3FcurrentJobId%3D4466383729%26f_AL%3Dtrue%26keywords%3DAnalista%2520de%2520infraestrutura%26location%3DBrasil%26postApplyJobId%3D4466383729" data-test-app-aware-link="">
+                      <!---->Retome o Premium ainda hoje<!---->
+                  </a>
+                </div>
+              </div>
+          </div>
+    
+        
+  
+
+
+<!---->
+<!---->            </div>
+
+<!---->
+          </div>
+<!---->        </div>
+<!---->      </div>
+  
+      </div>
+
+<!---->  
+    </div>
+  </div>
+</div>

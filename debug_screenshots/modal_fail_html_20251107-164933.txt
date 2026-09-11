@@ -1,0 +1,145 @@
+<div id="ember676" class="artdeco-modal__content ember-view">
+  <div class="display-flex flex-column justify-space-between full-height">
+    <div>
+        
+
+  <span class="jpac-modal-header-icon">
+    <svg role="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" data-supported-dps="64x64" data-test-icon="signal-success">
+<!---->  <svg display="var(--hue-web-svg-display-dark)">
+    <image href="https://static.licdn.com/aero-v1/sc/h/8uv7nlh1wh8x23p16inejnp8d" x="0" y="0" width="64" height="64"></image>
+  </svg>
+
+  <svg display="var(--hue-web-svg-display-light)">
+    <image href="https://static.licdn.com/aero-v1/sc/h/2y2u2mhlct0k9eme9b15wkljx" x="0" y="0" width="64" height="64"></image>
+  </svg>
+</svg>
+  </span>
+  <h3 class="jpac-modal-header t-20 t-bold">
+    Sua candidatura na Smart Fit foi enviada.
+  </h3>
+
+
+      <p class="t-14 t-black--light text-align-center mb6">
+        Você pode acompanhar sua candidatura na guia “Candidaturas enviadas“ em Minhas vagas
+      </p>
+    </div>
+    <div>
+      
+      <div>
+          
+      <div class="
+              
+              
+              " data-view-name="seeker-next-best-action-card">
+        <div class="job-seeker-nba-single-card">
+          <div class="
+              
+              full-width">
+            <div class="job-seeker-nba-single-card-container">
+<!---->
+<!---->
+<!---->
+                      
+      <hr class="artdeco-divider">
+
+        <div class="ph5 pt0 pb5">
+            <p class="t-18 t-bold mb4">
+              <!---->Destaque seu perfil para os recrutadores com vagas personalizadas para você<!---->
+            </p>
+
+          <div class="artdeco-card premium-accent-bar overflow-hidden pv3 ph2">
+            <h3 class="t-14 t-bold mb4">Vagas que combinam com seu perfil</h3>
+            <div class="display-flex">
+                <div class="job-seeker-nba-premium-upsell__taj-upsell-card artdeco-card">
+                  <span class="t-12"><strong>Entre os top 10%</strong> dos 92 candidatos</span>
+                  <div class="job-seeker-nba-premium-upsell__taj-upsell-skeleton-1"></div>
+                  <div class="job-seeker-nba-premium-upsell__taj-upsell-skeleton-2"></div>
+                  <div class="job-seeker-nba-premium-upsell__taj-upsell-skeleton-3"></div>
+                </div>
+                <div class="job-seeker-nba-premium-upsell__taj-upsell-card artdeco-card">
+                  <span class="t-12"><strong>Entre os top 20%</strong> dos 180 candidatos</span>
+                  <div class="job-seeker-nba-premium-upsell__taj-upsell-skeleton-1"></div>
+                  <div class="job-seeker-nba-premium-upsell__taj-upsell-skeleton-2"></div>
+                  <div class="job-seeker-nba-premium-upsell__taj-upsell-skeleton-3"></div>
+                </div>
+                <div class="job-seeker-nba-premium-upsell__taj-upsell-card artdeco-card">
+                  <span class="t-12"><strong>Entre os top 10%</strong> dos 100 candidatos</span>
+                  <div class="job-seeker-nba-premium-upsell__taj-upsell-skeleton-1"></div>
+                  <div class="job-seeker-nba-premium-upsell__taj-upsell-skeleton-2"></div>
+                  <div class="job-seeker-nba-premium-upsell__taj-upsell-skeleton-3"></div>
+                </div>
+            </div>
+          </div>
+
+          <div class="display-flex align-items-center justify-content-center mt3">
+              
+    <div class="ivm-image-view-model    job-seeker-nba-premium-upsell__taj-upsell-insights-facepile">
+        <ul class="ivm-image-view-model__img-list--stacked list-style-none display-flex justify-center">
+            <li class="ivm-image-view-model__img-list-item--stacked">
+              
+    <div class="ivm-view-attr__img-wrapper
+        
+        ">
+<!---->
+<!---->          <img width="32" src="https://media.licdn.com/dms/image/v2/D4D03AQE1iOSyOZ60WQ/profile-displayphoto-scale_100_100/B4DZoaV9RPK0Ac-/0/1761378556192?e=1764201600&amp;v=beta&amp;t=yEf6ALVx0GEZim2-epU_ouHKW9-OY6_EG4HhSptp7kE" loading="lazy" height="32" alt="" id="ember677" class="ivm-view-attr__img--centered ivm-view-attr__img--stacked ivm-view-attr__img--stacked-circle-size-1 EntityPhoto-circle-1-stackedFacepile   evi-image lazy-image ember-view">
+    </div>
+  
+            </li>
+            <li class="ivm-image-view-model__img-list-item--stacked">
+              
+    <div class="ivm-view-attr__img-wrapper
+        
+        ">
+<!---->
+<!---->          <img width="32" src="https://media.licdn.com/dms/image/v2/D4D03AQEXIzTEk9C7RA/profile-displayphoto-scale_100_100/B4DZfbsiDgGYAc-/0/1751737574506?e=1764201600&amp;v=beta&amp;t=9tAEZw7p1vSe6uEnYIz0h7G9_6uZgKtwHjahlsKlNcw" loading="lazy" height="32" alt="" id="ember678" class="ivm-view-attr__img--centered ivm-view-attr__img--stacked ivm-view-attr__img--stacked-circle-size-1 EntityPhoto-circle-1-stackedFacepile   evi-image lazy-image ember-view">
+    </div>
+  
+            </li>
+            <li class="ivm-image-view-model__img-list-item--stacked">
+              
+    <div class="ivm-view-attr__img-wrapper
+        
+        ">
+<!---->
+<!---->          <img width="32" src="https://media.licdn.com/dms/image/v2/D4D03AQG8S5Wkka6OPw/profile-displayphoto-shrink_100_100/B4DZQo_JbFGkAU-/0/1735854430721?e=1764201600&amp;v=beta&amp;t=iJDAsbjvYXaMKP5FjqsA9Ry4lxUAT9fIFTtC6iM1KN8" loading="lazy" height="32" alt="" id="ember679" class="ivm-view-attr__img--centered ivm-view-attr__img--stacked ivm-view-attr__img--stacked-circle-size-1 EntityPhoto-circle-1-stackedFacepile   evi-image lazy-image ember-view">
+    </div>
+  
+            </li>
+        </ul>
+
+<!---->    </div>
+  
+            <p class="t-14 t-black--light ml1">
+                <!---->Hilda e outros milhões de usuários têm contas Premium<!---->
+            </p>
+          </div>
+        </div>
+
+        <div id="ember680" class="artdeco-modal__actionbar ember-view job-seeker-nba--modal-footer-premium">
+          <div>
+            
+
+    <div class="premium-upsell-link">
+      <a class="TeLNUecZEHPriuYXxRKtwIMridORtI  artdeco-button artdeco-button--premium " href="http://www.linkedin.com/premium/products/?upsellOrderOrigin=Tracking%3Av1%3Ajob_post_apply_upsell%3AJob%20Seeker%3AIn-Product&amp;utype=job&amp;referenceId=9vETrmIrQguVUN6UEsRSVg%3D%3D&amp;isSS=false&amp;destRedirectURL=https%3A%2F%2Fwww.linkedin.com%2Fjobs%2Fsearch%2Fpost-apply%2Fnext-best-action%2F%3FcurrentJobId%3D4337373973%26f_AL%3Dtrue%26keywords%3DAnalista%2520de%2520infraestrutura%26location%3DBrasil%26postApplyJobId%3D4337373973" data-test-app-aware-link="">
+          Reative o Premium
+      </a>
+    </div>
+  
+          </div>
+        </div>
+  
+
+<!---->
+<!---->            </div>
+
+<!---->
+          </div>
+<!---->        </div>
+<!---->      </div>
+  
+      </div>
+
+<!---->  
+    </div>
+  </div>
+</div>
