@@ -125,20 +125,13 @@ class JobSearchPage(BasePage):
             self.status_queue.put("Status: Retomando...")
 
     def _wait_for_external_tab_close(self, external_window: str, main_window: str):
-        """Aguarda o fechamento da aba externa e retorna à aba de resultados."""
-        self.status_queue.put("Monitorando a aba externa. Feche-a para continuar automaticamente...")
+        """Monitora o fechamento sem alternar o foco do navegador."""
+        self.status_queue.put("Candidatura externa aberta. Você pode usar outras janelas; feche a guia da candidatura para continuar automaticamente...")
         while external_window in self.driver.window_handles:
             if self.stop_event.is_set():
                 raise InterruptedError("Sinal de parada recebido durante a candidatura externa.")
-            try:
-                self.driver.switch_to.window(external_window)
-                _ = self.driver.current_url
-            except Exception:
-                pass
             time.sleep(0.25)
 
-        if main_window in self.driver.window_handles:
-            self.driver.switch_to.window(main_window)
         self.pause_event.set()
         self.status_queue.put("Aba externa fechada. Retomando automaticamente...")
 
@@ -197,7 +190,6 @@ class JobSearchPage(BasePage):
                 return destination_tabs[-1]
             if job_window in handles:
                 try:
-                    self.driver.switch_to.window(job_window)
                     if "linkedin.com/jobs/" not in self.driver.current_url:
                         return job_window
                 except WebDriverException:
@@ -506,8 +498,7 @@ class JobSearchPage(BasePage):
                                 break
                         destination_window = self._find_external_destination(main_window, external_window)
                         if destination_window:
-                            self.driver.switch_to.window(destination_window)
-                            self.status_queue.put(f"Link de candidatura aberto: {sanitize_url(self.driver.current_url)}")
+                            self.status_queue.put("Link de candidatura aberto em outra guia. Você pode continuar usando o navegador.")
                             if destination_window == main_window:
                                 # Se o site abriu na mesma aba, recria a busca em outra aba
                                 # para permitir que a pessoa conclua a candidatura externa.
@@ -532,10 +523,13 @@ class JobSearchPage(BasePage):
                         except Exception:
                             self.status_queue.put("AVISO: Contexto HTML desta falha não pôde ser salvo.")
                         try:
-                            if external_window and external_window != main_window and external_window in self.driver.window_handles:
-                                self.driver.switch_to.window(external_window)
-                                self.driver.close()
-                            self._restore_main_window(main_window)
+                            handles = self.driver.window_handles
+                            other_open_windows = [handle for handle in handles if handle != main_window]
+                            if other_open_windows:
+                                self.pause_event.set()
+                                self.status_queue.put("Outras janelas continuam abertas; mantendo o foco atual do navegador.")
+                            else:
+                                self._restore_main_window(main_window)
                         except Exception as restore_error:
                             self.status_queue.put(f"ERRO: Não foi possível recuperar a aba principal: {sanitize_text(restore_error)}")
                 

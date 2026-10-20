@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from unittest.mock import Mock
+from selenium.common.exceptions import ElementClickInterceptedException
 
 import config
 from pages.application_modal import ApplicationModal
@@ -104,6 +106,17 @@ class AnswerSafetyTests(unittest.TestCase):
         self.assertTrue(self.modal._is_placeholder_option("Selecione uma opção"))
         self.assertTrue(self.modal._is_placeholder_option("Select an option"))
         self.assertFalse(self.modal._is_placeholder_option("Sim, tenho disponibilidade"))
+
+    def test_intercepted_progress_click_falls_back_to_dom_click(self):
+        element = Mock()
+        element.click.side_effect = ElementClickInterceptedException("covered by select")
+        self.modal.status_queue = Mock()
+        self.modal.driver = Mock()
+
+        self.modal._click_button(element)
+
+        self.modal.driver.execute_script.assert_called_once()
+        self.assertIs(self.modal.driver.execute_script.call_args.args[1], element)
 
 
 class PrivacyTests(unittest.TestCase):

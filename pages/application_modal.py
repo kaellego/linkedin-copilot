@@ -11,7 +11,12 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support.ui import Select, WebDriverWait
 from pages.base_page import BasePage
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    TimeoutException,
+    NoSuchElementException,
+    StaleElementReferenceException,
+)
 from services.ai_service import AIService
 import config
 from utils.debug_artifacts import save_failure_context
@@ -231,7 +236,7 @@ class ApplicationModal(BasePage):
                 element = WebDriverWait(self.driver, 2).until(
                     EC.element_to_be_clickable(locator)
                 )
-                element.click()
+                self._click_button(element)
                 self._wait_for_screen_transition(previous)
                 return
             except (TimeoutException, StaleElementReferenceException) as error:
@@ -247,7 +252,7 @@ class ApplicationModal(BasePage):
                 element = WebDriverWait(self.driver, 3).until(
                     EC.element_to_be_clickable(locator)
                 )
-                element.click()
+                self._click_button(element)
                 self._wait_for_screen_transition(previous)
                 return
             except (TimeoutException, StaleElementReferenceException) as error:
@@ -257,8 +262,19 @@ class ApplicationModal(BasePage):
     def _click_modal_button(self, locator, timeout: int = 4):
         previous = self._transition_signature()
         element = WebDriverWait(self.driver, timeout).until(EC.element_to_be_clickable(locator))
-        element.click()
+        self._click_button(element)
         self._wait_for_screen_transition(previous)
+
+    def _click_button(self, element):
+        """Tenta o clique normal; se outro controle cobrir o ponto, aciona o botão no DOM."""
+        try:
+            element.click()
+        except ElementClickInterceptedException:
+            self.status_queue.put("Clique do botão interceptado por outro campo; tentando pelo controle da tela.")
+            self.driver.execute_script(
+                "arguments[0].scrollIntoView({block: 'center', inline: 'center'}); arguments[0].click();",
+                element,
+            )
 
     def _transition_signature(self):
         try:
