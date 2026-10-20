@@ -1,1 +1,17 @@
+# Local credentials and candidate-specific configuration
 .env
+.env.*
+!.env.example
+env
+
+# Runtime data, session state, logs, and debug artifacts
+data/
+logs/
+debug_screenshots/
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/

@@ -5,7 +5,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from typing import Tuple
-import time
+import config
+from utils.privacy import sanitize_url
 
 class BasePage:
     """
@@ -15,8 +16,7 @@ class BasePage:
     
     def __init__(self, driver: WebDriver):
         self.driver = driver
-        # Um tempo de espera de 25 segundos é um bom equilíbrio entre velocidade e robustez.
-        self.wait = WebDriverWait(self.driver, 25)
+        self.wait = WebDriverWait(self.driver, config.DEFAULT_WAIT_SECONDS, poll_frequency=0.2)
 
     def _highlight_element(self, element: WebElement, color: str = 'red'):
         """Aplica um destaque visual a um elemento usando JavaScript."""
@@ -37,29 +37,32 @@ class BasePage:
             # Se o elemento se tornar 'stale', não há o que limpar.
             pass
 
-    def _find_element(self, locator: Tuple[str, str]) -> WebElement:
+    def _find_element(self, locator: Tuple[str, str], timeout: float = None) -> WebElement:
         """Encontra e retorna um elemento esperando ele estar visível."""
         try:
-            return self.wait.until(EC.visibility_of_element_located(locator))
+            waiter = self.wait if timeout is None else WebDriverWait(self.driver, timeout, poll_frequency=0.2)
+            return waiter.until(EC.visibility_of_element_located(locator))
         except TimeoutException:
-            raise TimeoutException(f"Elemento com localizador {locator} não encontrado na página {self.driver.current_url}")
+            raise TimeoutException(f"Elemento com localizador {locator} não encontrado na página {sanitize_url(self.driver.current_url)}")
 
     def _click(self, locator: Tuple[str, str]):
         """Espera um elemento ser clicável, o destaca, e então clica nele."""
         element = self.wait.until(EC.element_to_be_clickable(locator))
         original_style = self._highlight_element(element)
-        time.sleep(0.3)
-        element.click()
-        self._unhighlight_element(element, original_style)
+        try:
+            element.click()
+        finally:
+            self._unhighlight_element(element, original_style)
 
     def _send_keys(self, locator: Tuple[str, str], text: str):
         """Encontra um elemento, o destaca, e insere texto nele."""
         element = self._find_element(locator)
         original_style = self._highlight_element(element)
-        time.sleep(0.3)
-        element.clear()
-        element.send_keys(text)
-        self._unhighlight_element(element, original_style)
+        try:
+            element.clear()
+            element.send_keys(text)
+        finally:
+            self._unhighlight_element(element, original_style)
 
     def open_url(self, url: str):
         """Navega para uma URL específica, recuperando falhas transitórias."""

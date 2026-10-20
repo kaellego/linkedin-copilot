@@ -11,13 +11,17 @@ from browser.driver_factory import create_driver
 from bot.linkedin_bot import LinkedinBot
 from services.ai_service import AIService
 import config
+from utils.privacy import sanitize_text
+
+config.ensure_runtime_dirs()
 
 # --- Configuração do Logging ---
 logging.basicConfig(
-    filename='bot_execution.log',
+    filename=config.LOG_FILE,
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    datefmt='%Y-%m-%d %H:%M:%S',
+    encoding='utf-8',
 )
 
 def bot_thread_worker(status_queue, answer_queue, pause_event, stop_event, application_mode, keywords, location, work_type):
@@ -33,7 +37,7 @@ def bot_thread_worker(status_queue, answer_queue, pause_event, stop_event, appli
         bot = LinkedinBot(driver, status_queue, answer_queue, pause_event, stop_event, application_mode)
         bot.run()
     except Exception as e:
-        error_msg = f"Um erro crítico ocorreu na thread do bot: {e}"
+        error_msg = f"Um erro crítico ocorreu na thread do bot: {sanitize_text(e)}"
         logging.error(error_msg)
         status_queue.put(error_msg)
     finally:
@@ -131,20 +135,30 @@ class ControlPanelApp(tk.Tk):
             return True
         else:
             self.update_log_visual("Porta 9222 livre. Iniciando Chrome em modo de depuração...")
-            command = f'"{config.CHROME_EXECUTABLE_PATH}" --remote-debugging-port=9222 --user-data-dir="{config.CHROME_DEBUG_PROFILE_PATH}"'
             try:
-                subprocess.Popen(command, shell=True)
-                self.update_log_visual("Comando para iniciar o Chrome executado. Aguardando 7 segundos...")
-                time.sleep(7)
-                return True
+                subprocess.Popen([
+                    config.CHROME_EXECUTABLE_PATH,
+                    "--remote-debugging-port=9222",
+                    f"--user-data-dir={config.CHROME_DEBUG_PROFILE_PATH}",
+                ])
+                self.update_log_visual("Aguardando o Chrome abrir a porta de depuração...")
+                deadline = time.monotonic() + 12
+                while time.monotonic() < deadline:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                        probe.settimeout(0.25)
+                        if probe.connect_ex(("127.0.0.1", 9222)) == 0:
+                            return True
+                    time.sleep(0.2)
+                self.update_log_visual("ERRO: O Chrome não abriu a porta de depuração dentro do limite.")
+                return False
             except FileNotFoundError:
-                error_msg = f"ERRO: Não foi possível encontrar 'chrome.exe'. Verifique o caminho em config.py:\n{config.CHROME_EXECUTABLE_PATH}"
+                error_msg = "ERRO: Não foi possível encontrar o Chrome. Confira CHROME_EXECUTABLE_PATH no .env."
                 self.update_log_visual(error_msg)
                 logging.error(error_msg)
                 messagebox.showerror("Erro de Configuração", error_msg)
                 return False
             except Exception as e:
-                error_msg = f"ERRO ao iniciar o Chrome: {e}"
+                error_msg = f"ERRO ao iniciar o Chrome: {sanitize_text(e)}"
                 self.update_log_visual(error_msg)
                 logging.error(error_msg)
                 messagebox.showerror("Erro Inesperado", error_msg)
@@ -159,7 +173,7 @@ class ControlPanelApp(tk.Tk):
         self.entry_location.config(state=tk.DISABLED)
         
         logging.info("Iniciando processo do Bot.")
-        logging.info(f"Filtros - Palavras-chave: '{self.keywords_var.get()}', Localização: '{self.location_var.get()}'")
+        logging.info("Filtros de busca configurados; valores omitidos do log.")
 
         if not self.check_and_start_chrome_debug():
             self.reset_ui()
@@ -201,16 +215,16 @@ class ControlPanelApp(tk.Tk):
             
             # Se for uma mensagem de erro ou aviso, salva no arquivo de log
             if "ERRO" in message or "FAIL" in message:
-                logging.error(message)
+                logging.error(sanitize_text(message))
             elif "AVISO" in message:
-                logging.warning(message)
+                logging.warning(sanitize_text(message))
             elif not message.startswith("USER_INPUT_REQUIRED|"):
-                logging.info(message) # Loga atividades normais no arquivo
+                logging.info(sanitize_text(message))
 
             if message.startswith("USER_INPUT_REQUIRED|"):
                 question = message.split("|", 1)[1]
                 self.update_log_visual(f"AÇÃO NECESSÁRIA: O robô precisa da sua resposta para a pergunta: '{question}'")
-                logging.warning(f"Intervenção manual solicitada: {question}")
+                logging.warning(f"Intervenção manual solicitada: {sanitize_text(question)}")
                 
                 self.pause_button.config(state=tk.DISABLED)
                 self.resume_button.config(state=tk.DISABLED)
@@ -218,7 +232,7 @@ class ControlPanelApp(tk.Tk):
                 
                 self.answer_queue.put(answer)
                 if answer:
-                    msg = f"Sua resposta '{answer}' foi enviada ao robô."
+                    msg = "Sua resposta foi enviada ao robô."
                     self.update_log_visual(msg)
                     logging.info(msg)
                 else:

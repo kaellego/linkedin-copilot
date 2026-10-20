@@ -3,8 +3,9 @@ from browser.driver_factory import create_driver
 from bot.linkedin_bot import LinkedinBot
 from utils.controls import StopSignalException # NOVO IMPORT
 import config # NOVO IMPORT
-import time
 import os
+from utils.debug_artifacts import save_failure_context
+from utils.privacy import sanitize_text
 
 def cleanup_flags():
     """Remove os arquivos de flag no início e no fim da execução."""
@@ -16,11 +17,9 @@ def cleanup_flags():
 if __name__ == "__main__":
     cleanup_flags() # Limpa flags de uma execução anterior
     
-    if not os.path.exists('debug_screenshots'):
-        os.makedirs('debug_screenshots')
-        
     driver = None
     try:
+        config.ensure_runtime_dirs()
         driver = create_driver()
         bot = LinkedinBot(driver)
         bot.run()
@@ -30,11 +29,13 @@ if __name__ == "__main__":
         print(f"\nProcesso interrompido pelo usuário: {e}")
         
     except Exception as e:
-        print(f"Ocorreu um erro fatal na execução do bot: {e}")
+        print(f"Ocorreu um erro fatal na execução do bot: {sanitize_text(e)}")
         if driver:
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
-            driver.save_screenshot(f'debug_screenshots/fatal_error_{timestamp}.png')
-            print(f"Screenshot do erro salvo em: debug_screenshots/fatal_error_{timestamp}.png")
+            try:
+                folder = save_failure_context(driver, "main_fatal", e)
+                print(f"Contexto HTML sanitizado salvo em: {folder}")
+            except Exception:
+                print("Falha ao salvar contexto da execução.")
 
     finally:
         cleanup_flags() # Garante que os flags sejam removidos ao final

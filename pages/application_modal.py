@@ -1,12 +1,10 @@
 # pages/application_modal.py
 import time
-import random
 import threading
 import json
 import os
-import re
 import unicodedata
-from pathlib import Path
+from html.parser import HTMLParser
 from queue import Queue
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
@@ -16,6 +14,73 @@ from pages.base_page import BasePage
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 from services.ai_service import AIService
 import config
+from utils.debug_artifacts import save_failure_context
+from utils.privacy import sanitize_text
+
+
+class _ModalSignalsParser(HTMLParser):
+    """Extrai somente rótulos e estrutura, nunca valores dos campos, de um HTML salvo."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.headings = []
+        self.buttons = []
+        self.fields = []
+        self.question_groups = 0
+        self.questions = []
+        self.has_form = False
+        self.has_resume_card = False
+        self._captures = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        classes = set((attrs.get("class") or "").split())
+        void_tags = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+        if tag not in void_tags:
+            for capture in self._captures:
+                capture["depth"] += 1
+        if tag in {"h1", "h2", "h3", "h4"} or attrs.get("role") == "heading":
+            self._captures.append({"kind": "heading", "depth": 1, "text": []})
+        elif tag == "button":
+            self._captures.append({"kind": "button", "depth": 1, "text": [], "label": attrs.get("aria-label", "")})
+        if "fb-dash-form-element" in classes:
+            self._captures.append({"kind": "question", "depth": 1, "text": []})
+        if tag == "form":
+            self.has_form = True
+        if "fb-dash-form-element" in classes:
+            self.question_groups += 1
+        if "jobs-document-upload-redesign-card__container" in classes:
+            self.has_resume_card = True
+        if tag in {"input", "textarea", "select"}:
+            self.fields.append({
+                "type": attrs.get("type") or tag,
+                "name": attrs.get("name", ""),
+                "id": attrs.get("id", ""),
+                "label": attrs.get("aria-label") or attrs.get("placeholder", ""),
+                "required": "required" in attrs or attrs.get("aria-required") == "true",
+            })
+
+    def handle_data(self, data):
+        for capture in self._captures:
+            capture["text"].append(data)
+
+    def handle_endtag(self, tag):
+        completed = []
+        for capture in self._captures:
+            capture["depth"] -= 1
+            if capture["depth"] <= 0:
+                completed.append(capture)
+        self._captures = [capture for capture in self._captures if capture["depth"] > 0]
+        for capture in completed:
+            text = " ".join(" ".join(capture["text"]).split())
+            if capture["kind"] == "heading" and text:
+                self.headings.append(text)
+            elif capture["kind"] == "button":
+                label = text or capture.get("label", "")
+                if label:
+                    self.buttons.append(label)
+            elif capture["kind"] == "question" and text:
+                self.questions.append(text)
 
 class ApplicationModal(BasePage):
     """
@@ -29,7 +94,7 @@ class ApplicationModal(BasePage):
     WORK_EXPERIENCE_TITLE = (By.CSS_SELECTOR, "div[data-test-modal][role='dialog'] h3.t-16")
     MODAL_FORM_TITLE = (By.CSS_SELECTOR, "div.jobs-easy-apply-modal h3.t-16")
     FORM_GROUPS = (By.CSS_SELECTOR, ".fb-dash-form-element")
-    TEXT_INPUTS = (By.CSS_SELECTOR, "input:not([type='radio']):not([type='checkbox']), textarea")
+    TEXT_INPUTS = (By.CSS_SELECTOR, "input:not([type='radio']):not([type='checkbox']):not([type='file']):not([type='hidden']), textarea")
     
     # Botões de progresso específicos para cada etapa
     NEXT_BUTTON = (By.CSS_SELECTOR, "button[data-easy-apply-next-button]")
@@ -54,7 +119,7 @@ class ApplicationModal(BasePage):
         self.pause_event = pause_event
         self.stop_event = stop_event
         self.answers = self._load_answers()
-        self.ai_service = AIService(api_key=getattr(config, "GEMINI_API_KEY", None))
+        self.ai_service = AIService()
 
     def _load_answers(self) -> dict:
         """Carrega o arquivo de respostas conhecidas."""
@@ -68,10 +133,13 @@ class ApplicationModal(BasePage):
     def _save_answers(self):
         """Salva o dicionário de respostas no arquivo JSON."""
         try:
+            config.ensure_runtime_dirs()
             with open(config.ANSWERS_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.answers, f, indent=4, ensure_ascii=False)
+            if os.name != "nt":
+                os.chmod(config.ANSWERS_FILE, 0o600)
         except IOError as e:
-            self.status_queue.put(f"ERRO: Não foi possível salvar o arquivo de respostas: {e}")
+            self.status_queue.put(f"ERRO: Não foi possível salvar o arquivo de respostas: {sanitize_text(e)}")
 
     def _normalize_question(self, text: str) -> str:
         """Limpa o texto da pergunta para usar como chave de dicionário."""
@@ -102,26 +170,23 @@ class ApplicationModal(BasePage):
         return list(dict.fromkeys(options))
 
     def _ask_ai(self, question: str, options: list) -> str:
-        if not getattr(config, "GEMINI_API_KEY", None):
+        if not config.AI_ENABLED or not config.AI_PROFILE_CONTEXT or not options:
             return ""
         try:
             answer = self.ai_service.answer_question(question, options or None)
             if answer:
-                self.status_queue.put("Resposta gerada pela API do Google Gemini.")
+                self.status_queue.put("Resposta sugerida pela IA; validando opção disponível.")
             return answer.strip()
-        except Exception as e:
-            self.status_queue.put(f"AVISO: API do Google indisponível: {e}")
+        except Exception:
+            self.status_queue.put("AVISO: IA indisponível; será necessária uma resposta manual.")
             return ""
 
     def _match_option(self, answer: str, options: list) -> str:
-        normalized_answer = answer.strip().lower()
+        normalized_answer = self._screen_key(answer.strip())
         for option in options:
-            if option.lower() == normalized_answer:
+            if self._screen_key(option.strip()) == normalized_answer:
                 return option
-        for option in options:
-            if normalized_answer in option.lower() or option.lower() in normalized_answer:
-                return option
-        return answer.strip()
+        return ""
 
     def _is_valid_cached_answer(self, question: str, answer: str, options: list) -> bool:
         normalized_question = self._normalize_question(question)
@@ -129,10 +194,9 @@ class ApplicationModal(BasePage):
         if not normalized_answer or normalized_answer == normalized_question:
             return False
         if options:
-            return any(option.lower() == normalized_answer for option in options)
-        if normalized_question.startswith(("há quantos anos", "quantos anos", "quantos meses")):
-            return normalized_answer.isdigit()
-        return True
+            return bool(self._match_option(answer, options))
+        # Respostas livres dependem do contexto e nunca são reaproveitadas automaticamente.
+        return False
 
     def _check_control_signals(self):
         """Verifica os eventos de pausa e parada, com lógica de keep-alive."""
@@ -147,7 +211,7 @@ class ApplicationModal(BasePage):
                     _ = self.driver.title
                     self.status_queue.put("(Mantendo a sessão ativa...)")
                 except Exception as e:
-                    self.status_queue.put(f"Erro no keep-alive: {e}.")
+                    self.status_queue.put(f"Erro no keep-alive: {sanitize_text(e)}.")
                 if self.stop_event.is_set():
                     raise InterruptedError("Sinal de parada recebido durante a pausa.")
             self.status_queue.put("Status: Retomando...")
@@ -163,10 +227,12 @@ class ApplicationModal(BasePage):
         last_error = None
         for locator in locators:
             try:
+                previous = self._transition_signature()
                 element = WebDriverWait(self.driver, 2).until(
                     EC.element_to_be_clickable(locator)
                 )
                 element.click()
+                self._wait_for_screen_transition(previous)
                 return
             except (TimeoutException, StaleElementReferenceException) as error:
                 last_error = error
@@ -177,18 +243,46 @@ class ApplicationModal(BasePage):
         last_error = None
         for locator in (self.NEXT_BUTTON, self.NEXT_BUTTON_FALLBACK):
             try:
+                previous = self._transition_signature()
                 element = WebDriverWait(self.driver, 3).until(
                     EC.element_to_be_clickable(locator)
                 )
                 element.click()
+                self._wait_for_screen_transition(previous)
                 return
             except (TimeoutException, StaleElementReferenceException) as error:
                 last_error = error
         raise TimeoutException(f"Botão 'Avançar' não encontrado: {last_error}")
 
     def _click_modal_button(self, locator, timeout: int = 4):
+        previous = self._transition_signature()
         element = WebDriverWait(self.driver, timeout).until(EC.element_to_be_clickable(locator))
         element.click()
+        self._wait_for_screen_transition(previous)
+
+    def _transition_signature(self):
+        try:
+            signals = self._collect_screen_signals()
+            return (
+                tuple(signals["titulos"]),
+                tuple(signals["botoes"]),
+                tuple(signals["perguntas"]),
+                signals["quantidade_grupos_pergunta"],
+                signals["tem_cartao_curriculo"],
+            )
+        except Exception:
+            return self._screen_key(self._get_current_screen_title())
+
+    def _wait_for_screen_transition(self, previous, timeout: float = None):
+        timeout = timeout or config.TRANSITION_WAIT_SECONDS
+        try:
+            WebDriverWait(self.driver, timeout, poll_frequency=0.2).until(
+                lambda _: self._transition_signature() != previous
+                or self._is_application_sent()
+                or bool(self._validate_current_form())
+            )
+        except TimeoutException:
+            self.status_queue.put("Aguardando transição concluída; a tela ainda não confirmou mudança.")
 
     def _get_current_screen_title(self) -> str:
         """
@@ -244,36 +338,31 @@ class ApplicationModal(BasePage):
 
     def _collect_screen_signals(self) -> dict:
         """Coleta evidências visíveis do modal para classificar etapas sem título."""
-        dialog = self.driver.find_elements(By.CSS_SELECTOR, "div[role='dialog']")
-        scope = dialog[0] if dialog else self.driver
-        buttons = []
-        for button in scope.find_elements(By.CSS_SELECTOR, "button"):
-            label = (button.text or button.get_attribute("aria-label") or "").strip()
-            if label:
-                buttons.append(label)
-        headings = [
-            element.text.strip()
-            for element in scope.find_elements(By.CSS_SELECTOR, "h1, h2, h3, h4, [role='heading']")
-            if element.text.strip()
-        ]
-        fields = []
-        for field in scope.find_elements(By.CSS_SELECTOR, "input, textarea, select"):
-            fields.append({
-                "type": field.get_attribute("type") or field.tag_name,
-                "name": field.get_attribute("name") or "",
-                "id": field.get_attribute("id") or "",
-                "label": field.get_attribute("aria-label") or field.get_attribute("placeholder") or "",
-                "required": field.get_attribute("required") is not None,
-            })
-        groups = scope.find_elements(By.CSS_SELECTOR, ".fb-dash-form-element")
+        for selector in ("div[role='dialog']", ".jobs-easy-apply-modal"):
+            elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+            if elements:
+                return self._signals_from_html(elements[0].get_attribute("outerHTML") or "")
+        return self._signals_from_html("")
+
+    @staticmethod
+    def _signals_from_html(html: str) -> dict:
+        parser = _ModalSignalsParser()
+        parser.feed(html or "")
         return {
-            "titulos": headings[:20],
-            "botoes": buttons[:30],
-            "campos": fields[:50],
-            "quantidade_grupos_pergunta": len(groups),
-            "tem_formulario": bool(scope.find_elements(By.CSS_SELECTOR, "form")),
-            "tem_cartao_curriculo": bool(scope.find_elements(By.CSS_SELECTOR, ".jobs-document-upload-redesign-card__container")),
+            "titulos": parser.headings[:20],
+            "botoes": parser.buttons[:30],
+            "perguntas": parser.questions[:30],
+            "campos": parser.fields[:50],
+            "quantidade_grupos_pergunta": parser.question_groups,
+            "tem_formulario": parser.has_form,
+            "tem_cartao_curriculo": parser.has_resume_card,
         }
+
+    def _classify_saved_html(self, html: str) -> str:
+        """Classifica um snapshot salvo offline, também usado pelos testes."""
+        signals = self._signals_from_html(html)
+        title = signals["titulos"][0] if signals["titulos"] else "unknown"
+        return self._classify_screen(title, signals)
 
     def _classify_screen(self, title: str, signals: dict) -> str:
         """Retorna o estado canônico da tela usando título e controles presentes."""
@@ -317,37 +406,22 @@ class ApplicationModal(BasePage):
         text = unicodedata.normalize("NFKD", text.lower())
         return "".join(char for char in text if not unicodedata.combining(char))
 
+    def _is_placeholder_option(self, text: str) -> bool:
+        key = self._screen_key((text or "").strip())
+        placeholders = ("select an option", "selecionar opcao", "selecione uma opcao", "choose an option")
+        return not key or any(key.startswith(placeholder) for placeholder in placeholders)
+
     def _save_debug_html(self, step: int, title: str, reason: str, signals: dict = None) -> str:
-        """Salva o DOM completo e o modal em um pacote legível por ocorrência."""
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        safe_title = re.sub(r"[^a-zA-Z0-9_-]+", "_", self._screen_key(title)).strip("_")[:40] or "unknown"
-        folder = Path("debug_screenshots") / "html_debug" / f"{timestamp}_etapa_{step}_{safe_title}"
-        folder.mkdir(parents=True, exist_ok=True)
+        """Salva HTML sanitizado e metadados únicos da falha."""
         try:
-            page_html = self.driver.page_source
-            (folder / "pagina_completa.html").write_text(page_html, encoding="utf-8")
-            modal_html = ""
-            for selector in ("div[role='dialog']", ".artdeco-modal__content", ".jobs-easy-apply-modal"):
-                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                if elements:
-                    modal_html = elements[0].get_attribute("outerHTML") or ""
-                    if modal_html:
-                        break
-            (folder / "modal.html").write_text(modal_html or "Modal não localizado no DOM.", encoding="utf-8")
-            metadata = {
-                "data_hora": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "etapa": step,
-                "titulo_detectado": title,
-                "motivo": reason,
-                "sinais_detectados": signals or {},
-                "url": self.driver.current_url,
-                "arquivos": ["pagina_completa.html", "modal.html"],
-            }
-            (folder / "resumo.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+            folder = save_failure_context(
+                self.driver, f"etapa_{step}_{title}", reason, signals,
+                selector="div[role='dialog'], .artdeco-modal__content, .jobs-easy-apply-modal",
+            )
             self.status_queue.put(f"HTML de depuração salvo em: {folder}")
-            return str(folder)
-        except Exception as error:
-            self.status_queue.put(f"Falha ao salvar HTML de depuração: {error}")
+            return folder
+        except Exception:
+            self.status_queue.put("Falha ao salvar contexto HTML de depuração.")
             return ""
 
     def _is_application_sent(self) -> bool:
@@ -357,134 +431,173 @@ class ApplicationModal(BasePage):
         except NoSuchElementException:
             return False
 
-    def _handle_questions_screen(self):
-        """
-        Responde a perguntas adicionais usando o sistema de aprendizado.
-        Atualizado para lidar com perguntas em <legend> e respostas em radio buttons.
-        """
-        # Adiciona um limite para evitar loops infinitos caso a lógica de saída falhe
-        max_questions_to_answer = 15 
-        for _ in range(max_questions_to_answer):
-            self._check_control_signals()
-            question_answered_in_this_loop = False
-            
+    def _validate_current_form(self) -> list:
+        """Valida campos obrigatórios e erros visíveis antes de avançar ou enviar."""
+        errors = []
+        seen = set()
+        modal_elements = self.driver.find_elements(By.CSS_SELECTOR, "div[role='dialog'], .jobs-easy-apply-modal")
+        scope = modal_elements[0] if modal_elements else self.driver
+        for feedback in scope.find_elements(*self.VALIDATION_ERROR):
             try:
-                # Aguarda um pouco para os elementos do formulário estarem disponíveis
-                WebDriverWait(self.driver, 5).until(
-                    EC.presence_of_all_elements_located(self.FORM_GROUPS)
+                if feedback.is_displayed() and feedback.text.strip():
+                    seen.add("LinkedIn indica erro de validação.")
+            except StaleElementReferenceException:
+                continue
+
+        controls = scope.find_elements(
+            By.CSS_SELECTOR,
+            "input[required], textarea[required], select[required], [aria-required='true']",
+        )
+        for field in controls:
+            try:
+                if not field.is_displayed():
+                    continue
+                field_type = (field.get_attribute("type") or field.tag_name or "").lower()
+                name = field.get_attribute("name") or field.get_attribute("id") or "campo obrigatório"
+                value = (field.get_attribute("value") or "").strip()
+                if field_type in ("radio", "checkbox"):
+                    peers = [
+                        item for item in scope.find_elements(By.CSS_SELECTOR, "input")
+                        if item.get_attribute("name") == field.get_attribute("name")
+                    ]
+                    valid = any(item.is_selected() for item in peers)
+                elif field.tag_name.lower() == "select":
+                    selected = Select(field).first_selected_option
+                    valid = bool(selected.get_attribute("value") or selected.text.strip()) and not self._is_placeholder_option(selected.text)
+                else:
+                    valid = bool(value)
+                if not valid:
+                    seen.add(f"Campo obrigatório sem resposta: {name}.")
+            except StaleElementReferenceException:
+                seen.add("Um campo mudou durante a validação; tente novamente.")
+
+        try:
+            invalid = scope.find_elements(By.CSS_SELECTOR, ":invalid")
+            if any(field.is_displayed() for field in invalid):
+                seen.add("Há campo obrigatório ou inválido no formulário.")
+        except StaleElementReferenceException:
+            seen.add("O formulário mudou durante a validação; tente novamente.")
+        errors.extend(sorted(seen))
+        return errors
+
+    def _require_valid_form(self) -> None:
+        errors = self._validate_current_form()
+        if errors:
+            self.status_queue.put("Validação bloqueou o avanço: " + " ".join(errors))
+            raise ValueError("Formulário contém campos obrigatórios ou erros de validação.")
+
+    def _group_has_answer(self, group) -> bool:
+        for locator in (
+            (By.CSS_SELECTOR, "input[type='radio']:checked, input[type='checkbox']:checked"),
+            (By.TAG_NAME, "select"),
+        ):
+            elements = group.find_elements(*locator)
+            if elements:
+                if locator[1] == "select":
+                    selected = Select(elements[0]).first_selected_option
+                    if not self._is_placeholder_option(selected.text):
+                        return True
+                else:
+                    return True
+        for field in group.find_elements(*self.TEXT_INPUTS):
+            if (field.get_attribute("value") or "").strip():
+                return True
+        return False
+
+    def _apply_group_answer(self, group, answer: str, options: list) -> bool:
+        selects = group.find_elements(By.TAG_NAME, "select")
+        if selects:
+            Select(selects[0]).select_by_visible_text(answer)
+            return self._screen_key(Select(selects[0]).first_selected_option.text.strip()) == self._screen_key(answer)
+
+        text_fields = group.find_elements(*self.TEXT_INPUTS)
+        if text_fields:
+            field = text_fields[0]
+            field.clear()
+            field.send_keys(answer)
+            return (field.get_attribute("value") or "").strip() == answer.strip()
+
+        labels = group.find_elements(By.TAG_NAME, "label")
+        for label in labels:
+            if self._screen_key(label.text.strip()) == self._screen_key(answer):
+                label.click()
+                selected = group.find_elements(
+                    By.CSS_SELECTOR, "input[type='radio']:checked, input[type='checkbox']:checked"
                 )
-                form_groups = self.driver.find_elements(*self.FORM_GROUPS)
+                return bool(selected)
+        return False
 
-                for group in form_groups:
-                    try:
-                        # --- 1. LÓGICA ATUALIZADA PARA ENCONTRAR O TEXTO DA PERGUNTA ---
-                        question_text = ""
-                        try:
-                            # Nova abordagem: a pergunta está em uma tag <legend>
-                            question_element = group.find_element(By.TAG_NAME, "legend")
-                            question_text = question_element.text
-                        except NoSuchElementException:
-                            # Abordagem antiga (fallback): a pergunta está em uma <label>
-                            question_element = group.find_element(By.TAG_NAME, "label")
-                            question_text = question_element.text
-                        
-                        if not question_text:
-                            continue # Pula para o próximo grupo se não houver texto na pergunta
+    def _handle_questions_screen(self):
+        """Preenche uma pergunta por vez, verificando a resposta após cada interação."""
+        def questions_or_progress_ready(driver):
+            return (
+                driver.find_elements(*self.FORM_GROUPS)
+                or driver.find_elements(*self.NEXT_BUTTON)
+                or driver.find_elements(*self.REVIEW_BUTTON)
+            )
 
-                        # Verifica se a pergunta já foi respondida (lógica de verificação de valor)
-                        is_answered = False
-                        try: # Verifica se é um select e já tem valor
-                            select_el = group.find_element(By.TAG_NAME, "select")
-                            if Select(select_el).first_selected_option.text not in ["", "Select an option", "Selecionar opção"]:
-                                is_answered = True
-                        except NoSuchElementException:
-                            try: # Verifica se é um input de texto e já tem valor
-                                input_el = group.find_element(*self.TEXT_INPUTS)
-                                if input_el.get_attribute('value'):
-                                    is_answered = True
-                            except NoSuchElementException:
-                                try: # Verifica se é um radio button e já está selecionado
-                                    selected_radio = group.find_element(By.CSS_SELECTOR, "input[type='radio']:checked")
-                                    is_answered = True
-                                except NoSuchElementException:
-                                    pass # Nenhuma das opções acima foi encontrada ou respondida
-                        
-                        if is_answered:
-                            continue # Pula para a próxima pergunta
+        WebDriverWait(self.driver, 2, poll_frequency=0.2).until(questions_or_progress_ready)
+        for _ in range(15):
+            self._check_control_signals()
+            groups = self.driver.find_elements(*self.FORM_GROUPS)
+            pending_group = None
+            question_text = ""
+            for group in groups:
+                try:
+                    if self._group_has_answer(group):
+                        continue
+                    question_element = next(
+                        iter(group.find_elements(By.TAG_NAME, "legend") or group.find_elements(By.TAG_NAME, "label")),
+                        None,
+                    )
+                    if question_element and question_element.text.strip():
+                        pending_group = group
+                        question_text = question_element.text.strip()
+                        break
+                except StaleElementReferenceException:
+                    continue
 
-                        # --- Lógica de obter e aplicar a resposta (semelhante ao original) ---
-                        normalized_question = self._normalize_question(question_text)
-                        available_options = self._get_available_options(group)
-                        answer_to_apply = self.answers.get(normalized_question)
+            if pending_group is None:
+                self.status_queue.put("Perguntas visíveis concluídas; validando campos obrigatórios.")
+                self._require_valid_form()
+                return True
 
-                        if answer_to_apply and self._is_valid_cached_answer(
-                            question_text, answer_to_apply, available_options
-                        ):
-                            self.status_queue.put("Resposta carregada do arquivo answers.json.")
-                        else:
-                            if answer_to_apply:
-                                self.status_queue.put("AVISO: Resposta inválida no answers.json. Gerando nova resposta.")
-                                answer_to_apply = ""
-                            answer_to_apply = self._ask_ai(question_text, available_options)
-                            if answer_to_apply and available_options:
-                                answer_to_apply = self._match_option(answer_to_apply, available_options)
-                            if answer_to_apply:
-                                self.answers[normalized_question] = answer_to_apply
-                                self._save_answers()
-                                self.status_queue.put("Resposta da IA salva no arquivo answers.json.")
+            normalized_question = self._normalize_question(question_text)
+            options = self._get_available_options(pending_group)
+            cached_answer = self.answers.get(normalized_question, "")
+            answer = cached_answer if self._is_valid_cached_answer(question_text, cached_answer, options) else ""
+            if cached_answer and not answer:
+                self.status_queue.put("Resposta salva ignorada porque não corresponde às opções atuais.")
 
-                        if not answer_to_apply:
-                            self.status_queue.put(f"USER_INPUT_REQUIRED|{question_text}")
-                            user_answer = self.answer_queue.get()
-                            if user_answer is None or user_answer.lower() == 'pular':
-                                raise InterruptedError("Candidatura cancelada pelo usuário.")
-                            self.answers[normalized_question] = user_answer
-                            self._save_answers()
-                            answer_to_apply = user_answer
-                        
-                        # --- 2. LÓGICA ATUALIZADA PARA RESPONDER (SELECT, INPUT, RADIO) ---
-                        try:
-                            # Tenta responder como <select>
-                            select_el = group.find_element(By.TAG_NAME, "select")
-                            Select(select_el).select_by_visible_text(answer_to_apply)
-                        except NoSuchElementException:
-                            try:
-                                # Tenta responder como <input> de texto ou <textarea>
-                                input_el = group.find_element(*self.TEXT_INPUTS)
-                                input_el.clear()
-                                input_el.send_keys(answer_to_apply)
-                            except NoSuchElementException:
-                                try:
-                                    # NOVA ABORDAGEM: Tenta responder clicando na label do radio/checkbox
-                                    # XPath para encontrar uma label que contenha o texto da resposta
-                                    answer_xpath = f".//label[normalize-space()='{answer_to_apply}']"
-                                    answer_label = group.find_element(By.XPATH, answer_xpath)
-                                    answer_label.click()
-                                except NoSuchElementException:
-                                    self.status_queue.put(
-                                        f"ERRO: Campo de resposta não encontrado para: '{question_text}'"
-                                    )
-                                    raise NoSuchElementException(
-                                        f"Campo de resposta não encontrado para: {question_text}"
-                                    )
-                        
-                        self.status_queue.put(f"Respondido '{question_text}' com '{answer_to_apply}'.")
-                        question_answered_in_this_loop = True
-                        time.sleep(random.uniform(0.2, 0.5))
-                        break # Sai do loop 'for group' para reavaliar a página do zero
+            if not answer:
+                ai_answer = self._ask_ai(question_text, options)
+                answer = self._match_option(ai_answer, options) if options and ai_answer else ""
 
-                    except (NoSuchElementException, StaleElementReferenceException):
-                        continue # Erro em um grupo específico, tenta o próximo
-                
-                # Se percorreu todas as perguntas e não respondeu nenhuma, significa que terminou
-                if not question_answered_in_this_loop:
-                    break # Sai do loop 'while True'
+            if not answer:
+                self.status_queue.put(f"USER_INPUT_REQUIRED|{question_text}")
+                user_answer = self.answer_queue.get()
+                if user_answer is None or user_answer.strip().lower() == "pular":
+                    raise InterruptedError("Candidatura cancelada pelo usuário.")
+                answer = self._match_option(user_answer, options) if options else ""
+                if options and not answer:
+                    self.status_queue.put("Resposta precisa corresponder exatamente a uma das opções visíveis.")
+                    self.status_queue.put(f"USER_INPUT_REQUIRED|{question_text}")
+                    user_answer = self.answer_queue.get()
+                    if user_answer is None or user_answer.strip().lower() == "pular":
+                        raise InterruptedError("Candidatura cancelada pelo usuário.")
+                    answer = self._match_option(user_answer, options)
+                if not options:
+                    # Texto livre pode conter dados pessoais e depende do contexto da vaga;
+                    # nunca o reaproveitamos automaticamente em outra candidatura.
+                    answer = user_answer.strip()
+                elif answer:
+                    self.answers[normalized_question] = answer
+                    self._save_answers()
 
-            except (TimeoutException, StaleElementReferenceException):
-                self.status_queue.put("Modal de perguntas atualizado. Re-analisando...")
-                continue # O DOM mudou, reinicia a análise
-        
-        self.status_queue.put("Todas as perguntas foram respondidas ou não foram encontradas novas perguntas.")
+            if not answer or not self._apply_group_answer(pending_group, answer, options):
+                raise ValueError("A resposta não foi aplicada ou confirmada no campo.")
+            self.status_queue.put(f"Resposta aplicada e conferida para: '{question_text}'.")
+        raise ValueError("Limite de perguntas por etapa excedido.")
 
     def _handle_contact_step(self) -> str:
         self.status_queue.put("Processando: Informações de Contato.")
@@ -506,12 +619,14 @@ class ApplicationModal(BasePage):
                 self.status_queue.put("Primeiro currículo da lista selecionado.")
             except (TimeoutException, NoSuchElementException):
                 self.status_queue.put("AVISO: Nenhum card de currículo para selecionar.")
+        self._require_valid_form()
         self._click_next_button()
         return "optional_or_questions"
 
     def _handle_questions_step(self) -> str:
         self.status_queue.put("Processando: Perguntas da etapa.")
         self._handle_questions_screen()
+        self._require_valid_form()
         try:
             self._click_modal_button(self.REVIEW_BUTTON)
         except TimeoutException:
@@ -520,17 +635,21 @@ class ApplicationModal(BasePage):
 
     def _handle_optional_step(self) -> str:
         self.status_queue.put("Processando: Etapa opcional.")
+        self._require_valid_form()
         self._click_optional_next()
         return "questions_or_review"
 
     def _handle_work_experience_step(self) -> str:
         self.status_queue.put("Processando: Experiência profissional.")
+        self._require_valid_form()
         self._click_next_button()
         return "next_step"
 
     def _handle_review_step(self) -> str:
+        self._require_valid_form()
         self.status_queue.put("Processando: Revisão. Enviando candidatura...")
         self._click_modal_button(self.SUBMIT_BUTTON)
+        WebDriverWait(self.driver, 10, poll_frequency=0.2).until(lambda _: self._is_application_sent())
         self._click_modal_button(self.DONE_BUTTON)
         self.status_queue.put("Candidatura enviada com sucesso!")
         return "SUCCESS"
@@ -584,7 +703,7 @@ class ApplicationModal(BasePage):
                     return "SUCCESS"
                 expected_transition = transition
             except Exception as error:
-                self.status_queue.put(f"Falha na etapa '{state}': {error}")
+                self.status_queue.put(f"Falha na etapa '{state}': {sanitize_text(error)}")
                 self._save_debug_html(step, current_title, f"falha na etapa {state}: {error}", signals)
                 return "FAIL"
 

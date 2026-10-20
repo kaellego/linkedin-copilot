@@ -15,6 +15,8 @@ from selenium.webdriver.support.ui import Select, WebDriverWait
 from pages.base_page import BasePage
 from pages.application_modal import ApplicationModal
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException, WebDriverException
+from utils.debug_artifacts import save_failure_context
+from utils.privacy import sanitize_text, sanitize_url
 import config
 
 class JobSearchPage(BasePage):
@@ -29,6 +31,8 @@ class JobSearchPage(BasePage):
     JOB_LOCATION_TEXT = (By.CSS_SELECTOR, "div.artdeco-entity-lockup__caption span[dir='ltr']")
     APPLIED_INDICATOR = (By.CSS_SELECTOR, ".job-card-container__footer-job-state")
     APPLY_BUTTON = (By.CSS_SELECTOR, "button.jobs-apply-button")
+    EXTERNAL_APPLY_BUTTON_ID = (By.CSS_SELECTOR, "button#jobs-apply-button-id[data-live-test-job-apply-button]")
+    JOB_DETAILS_APPLY_BUTTON = (By.CSS_SELECTOR, ".jobs-search__job-details--wrapper button#jobs-apply-button-id[data-live-test-job-apply-button]")
     EXTERNAL_APPLY_BUTTON = (By.CSS_SELECTOR, "button[data-live-test-job-apply-button][role='link']")
     EXTERNAL_APPLY_BUTTON_FALLBACK = (By.CSS_SELECTOR, "button.jobs-apply-button[aria-label^='Candidatar-se']")
     EXTERNAL_APPLY_BUTTON_GENERIC = (By.CSS_SELECTOR, "button.jobs-apply-button[data-live-test-job-apply-button]")
@@ -71,8 +75,8 @@ class JobSearchPage(BasePage):
             try:
                 with open(config.ANSWERS_FILE, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except (json.JSONDecodeError, IOError) as e:
-                self.status_queue.put(f"AVISO: Não foi possível carregar o arquivo de respostas: {e}")
+            except (json.JSONDecodeError, IOError):
+                self.status_queue.put("AVISO: Não foi possível carregar o arquivo de respostas.")
                 return {}
         return {}
 
@@ -93,11 +97,14 @@ class JobSearchPage(BasePage):
         if job_id and job_id not in self.applied_job_ids:
             self.applied_job_ids.append(job_id)
             try:
+                config.ensure_runtime_dirs()
                 with open(config.APPLIED_JOBS_FILE, 'w', encoding='utf-8') as f:
                     json.dump(self.applied_job_ids, f, indent=4)
+                if os.name != "nt":
+                    os.chmod(config.APPLIED_JOBS_FILE, 0o600)
                 self.status_queue.put(f"Vaga {job_id} salva no histórico.")
             except IOError as e:
-                self.status_queue.put(f"ERRO: Não foi possível salvar o histórico: {e}")
+                self.status_queue.put(f"ERRO: Não foi possível salvar o histórico: {sanitize_text(e)}")
 
     def _check_control_signals(self):
         """Verifica os eventos de pausa e parada, com lógica de keep-alive."""
@@ -112,7 +119,7 @@ class JobSearchPage(BasePage):
                     _ = self.driver.title
                     self.status_queue.put("(Mantendo a sessão ativa...)")
                 except Exception as e:
-                    self.status_queue.put(f"Erro no keep-alive: {e}.")
+                    self.status_queue.put(f"Erro no keep-alive: {sanitize_text(e)}.")
                 if self.stop_event.is_set():
                     raise InterruptedError("Sinal de parada recebido durante a pausa.")
             self.status_queue.put("Status: Retomando...")
@@ -128,7 +135,7 @@ class JobSearchPage(BasePage):
                 _ = self.driver.current_url
             except Exception:
                 pass
-            time.sleep(1)
+            time.sleep(0.25)
 
         if main_window in self.driver.window_handles:
             self.driver.switch_to.window(main_window)
@@ -148,22 +155,22 @@ class JobSearchPage(BasePage):
 
     def _find_clickable_element(self, locator, timeout: int):
         """Encontra um botão visível sem avaliar um elemento nulo durante atualizações do DOM."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        def find_clickable(driver):
             try:
-                elements = self.driver.find_elements(*locator)
-            except WebDriverException:
-                return None
-            for element in elements:
-                try:
+                elements = driver.find_elements(*locator)
+                for element in elements:
                     if element.is_displayed() and element.is_enabled():
                         return element
-                except StaleElementReferenceException:
-                    continue
-                except WebDriverException:
-                    return None
-            time.sleep(0.5)
-        return None
+            except (StaleElementReferenceException, WebDriverException):
+                return False
+            return False
+        try:
+            return WebDriverWait(
+                self.driver, timeout, poll_frequency=0.2,
+                ignored_exceptions=(StaleElementReferenceException,),
+            ).until(find_clickable)
+        except TimeoutException:
+            return None
 
     def _canonical_job_url(self, job_url: str) -> str:
         """Remove parâmetros temporários do LinkedIn e mantém apenas a URL da vaga."""
@@ -179,6 +186,60 @@ class JobSearchPage(BasePage):
             element.click()
         except WebDriverException:
             self.driver.execute_script("arguments[0].click();", element)
+
+    def _find_external_destination(self, main_window: str, job_window: str, timeout: int = 8):
+        """Encontra a aba do empregador aberta pelo botão externo do LinkedIn."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            handles = self.driver.window_handles
+            destination_tabs = [handle for handle in handles if handle not in (main_window, job_window)]
+            if destination_tabs:
+                return destination_tabs[-1]
+            if job_window in handles:
+                try:
+                    self.driver.switch_to.window(job_window)
+                    if "linkedin.com/jobs/" not in self.driver.current_url:
+                        return job_window
+                except WebDriverException:
+                    pass
+            time.sleep(0.25)
+        return None
+
+    def _wait_for_job_details(self, job, timeout: int = 10):
+        """Espera o painel atualizar para a mesma vaga selecionada no cartão."""
+        try:
+            title_link = job.find_element(*self.JOB_TITLE_LINK)
+            expected_title = (title_link.get_attribute("aria-label") or title_link.text or "").strip().lower()
+            expected_title = expected_title.split(" with verification")[0].strip()
+        except (NoSuchElementException, StaleElementReferenceException):
+            expected_title = ""
+
+        def matching_details(driver):
+            for panel in driver.find_elements(By.CSS_SELECTOR, ".jobs-search__job-details--wrapper"):
+                title_candidates = [panel.get_attribute("aria-label") or ""]
+                title_candidates.extend(
+                    element.get_attribute("aria-label") or ""
+                    for element in panel.find_elements(By.CSS_SELECTOR, "[aria-label]")
+                )
+                panel_titles = [" ".join(title.lower().split()) for title in title_candidates if title]
+                title_matches = (
+                    not expected_title
+                    or not panel_titles
+                    or any(expected_title in title or title in expected_title for title in panel_titles)
+                )
+                if title_matches:
+                    buttons = panel.find_elements(*self.EXTERNAL_APPLY_BUTTON_ID)
+                    if any(button.is_displayed() for button in buttons):
+                        return panel
+            return False
+
+        try:
+            return WebDriverWait(self.driver, timeout, poll_frequency=0.2,
+                                 ignored_exceptions=(StaleElementReferenceException,)).until(matching_details)
+        except TimeoutException as exc:
+            raise TimeoutException(
+                f"Job details panel '{expected_title or 'selected job'}' did not load with a visible apply button within {timeout}s"
+            ) from exc
 
     def _restore_main_window(self, main_window: str):
         """Retorna para a janela principal ou para a primeira janela ainda válida."""
@@ -224,13 +285,13 @@ class JobSearchPage(BasePage):
             urlencode(base_query),
             base_url_parts.fragment,
         ))
-        self.status_queue.put(f"URL da busca: {url}")
+        self.status_queue.put(f"URL da busca: {sanitize_url(url)}")
         self.open_url(url)
     
     def _get_job_count(self) -> int:
         """Espera a lista carregar e rola a página exaustivamente para carregar todas as vagas."""
         try:
-            self.status_queue.put("Aguardando o carregamento inicial da lista de vagas...")
+            self.status_queue.put(f"Aguardando a lista de vagas por até {config.DEFAULT_WAIT_SECONDS:g}s...")
             self.wait.until(EC.visibility_of_element_located(self.JOB_LIST_ITEM))
             
             self.status_queue.put("Iniciando rolagem para carregar todas as vagas da página...")
@@ -239,9 +300,14 @@ class JobSearchPage(BasePage):
             while attempts < 5:
                 self._check_control_signals()
                 self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(1)
-                current_count = len(self.driver.find_elements(*self.JOB_LIST_ITEM))
-                if current_count == last_count:
+                try:
+                    WebDriverWait(self.driver, 1.5, poll_frequency=0.2).until(
+                        lambda driver: len(driver.find_elements(*self.JOB_LIST_ITEM)) > last_count
+                    )
+                    current_count = len(self.driver.find_elements(*self.JOB_LIST_ITEM))
+                except TimeoutException:
+                    current_count = len(self.driver.find_elements(*self.JOB_LIST_ITEM))
+                if current_count <= last_count:
                     attempts += 1
                 else:
                     last_count = current_count
@@ -251,11 +317,12 @@ class JobSearchPage(BasePage):
             self.status_queue.put(f"Rolagem finalizada. Encontradas {last_count} vagas REAIS na página.")
             return last_count
         except TimeoutException:
-            self.status_queue.put("ERRO: A lista de vagas não carregou em 20 segundos.")
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
-            screenshot_path = f'debug_screenshots/vagas_nao_carregadas_{timestamp}.png'
-            self.driver.save_screenshot(screenshot_path)
-            self.status_queue.put(f"Screenshot salvo em: {screenshot_path}")
+            self.status_queue.put("ERRO: A lista de vagas não carregou dentro do limite configurado.")
+            folder = save_failure_context(
+                self.driver, "lista_de_vagas", "lista de vagas não carregou",
+                selector=".jobs-search-results-list",
+            )
+            self.status_queue.put(f"HTML sanitizado salvo em: {folder}")
             return 0
             
     def process_easy_apply_jobs(self, curriculum_path: str, process_normal_jobs: bool = False) -> str:
@@ -275,9 +342,7 @@ class JobSearchPage(BasePage):
                 job = all_jobs[i]
 
                 self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", job)
-                time.sleep(0.2)
                 original_style = self._highlight_element(job)
-                time.sleep(0.2)
 
                 job_id = job.get_attribute('data-occludable-job-id')
                 if job_id in self.applied_job_ids:
@@ -332,22 +397,30 @@ class JobSearchPage(BasePage):
                     self.status_queue.put(str(e))
                     break 
                 except Exception as e:
-                    self.status_queue.put(f"ERRO ao processar vaga: {e}.")
+                    self.status_queue.put(f"ERRO ao processar vaga: {sanitize_text(e)}.")
+                    try:
+                        folder = save_failure_context(self.driver, f"vaga_simplificada_{job_id}", e)
+                        self.status_queue.put(f"HTML sanitizado salvo em: {folder}")
+                    except Exception:
+                        pass
                 
                 finally:
                     if modal_is_open:
                         self.status_queue.put("Fechando modal de candidatura...")
                         try:
-                            time.sleep(0.5) 
                             close_button = self.wait.until(EC.element_to_be_clickable(self.CLOSE_MODAL_BUTTON))
                             close_button.click()
-                            time.sleep(0.3)
                             try:
-                                discard_button = self.driver.find_element(*self.DISCARD_BUTTON)
+                                discard_button = WebDriverWait(self.driver, 2, poll_frequency=0.2).until(
+                                    EC.element_to_be_clickable(self.DISCARD_BUTTON)
+                                )
                                 if discard_button.is_displayed():
                                     discard_button.click()
                                     self.status_queue.put("Confirmação de descarte clicada.")
-                            except (NoSuchElementException, TimeoutException): pass 
+                            except TimeoutException:
+                                WebDriverWait(self.driver, 3, poll_frequency=0.2).until(
+                                    EC.invisibility_of_element_located((By.CSS_SELECTOR, "div[role='dialog']"))
+                                )
                         except Exception:
                             self.status_queue.put("Modal provavelmente fechou automaticamente.")
             
@@ -372,15 +445,14 @@ class JobSearchPage(BasePage):
 
             original_style = None
             job = None
+            external_window = main_window
             try:
                 all_jobs = self.driver.find_elements(*self.JOB_LIST_ITEM)
                 if i >= len(all_jobs): break
                 job = all_jobs[i]
 
-                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", job)
-                time.sleep(0.5)
+                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'auto'});", job)
                 original_style = self._highlight_element(job)
-                time.sleep(0.5)
 
                 job_id = job.get_attribute('data-occludable-job-id')
                 if job_id in self.applied_job_ids:
@@ -411,58 +483,69 @@ class JobSearchPage(BasePage):
                     continue
                 except NoSuchElementException:
                     try:
-                        self.status_queue.put("VAGA NORMAL: Abrindo os detalhes da vaga...")
-                        job_url = job.find_element(*self.JOB_TITLE_LINK).get_attribute("href")
-                        job_url = self._canonical_job_url(job_url)
-                        external_window = None
+                        results_url = self.driver.current_url
+                        self.status_queue.put("VAGA NORMAL: Clicando no cartão para abrir os detalhes da vaga...")
                         try:
-                            job.find_element(*self.JOB_TITLE_LINK).click()
-                        except (NoSuchElementException, StaleElementReferenceException):
+                            job.find_element(By.CSS_SELECTOR, "div.job-card-container").click()
+                        except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
                             self.driver.execute_script("arguments[0].click();", job)
-                        self.status_queue.put("Painel da vaga aberto. Abrindo o link em uma aba dedicada...")
+                        details_panel = self._wait_for_job_details(job)
+                        details_button = WebDriverWait(self.driver, 5, poll_frequency=0.2).until(
+                            lambda _: next((button for button in details_panel.find_elements(*self.EXTERNAL_APPLY_BUTTON_ID)
+                                            if button.is_displayed() and button.is_enabled()), False)
+                        )
 
-                        self.driver.switch_to.new_window("tab")
-                        self.open_url(job_url)
-                        external_window = self.driver.current_window_handle
-                        self.status_queue.put(f"Link da vaga aberto: {self.driver.current_url}. Procurando o botão 'Candidatar-se'...")
-
-                        external_apply_button = None
-                        for locator in (
-                            self.EXTERNAL_APPLY_BUTTON,
-                            self.EXTERNAL_APPLY_BUTTON_FALLBACK,
-                            self.EXTERNAL_APPLY_BUTTON_GENERIC,
-                            self.EXTERNAL_APPLY_BUTTON_TEXT,
-                        ):
-                            external_apply_button = self._find_clickable_element(locator, 10)
-                            if external_apply_button is not None:
-                                break
-
-                        if external_apply_button is None:
-                            raise TimeoutException("Botão 'Candidatar-se' não apareceu na página da vaga.")
-                        self._click_external_apply_button(external_apply_button)
-                        self.status_queue.put("Botão 'Candidatar-se' clicado. Aguardando a candidatura no site da empresa...")
+                        self.status_queue.put("Painel da vaga aberto. Clicando em 'Candidatar-se'...")
+                        self._click_external_apply_button(details_button)
+                        self.status_queue.put("Botão externo 'Candidatar-se' clicado.")
                         for locator in (self.EXTERNAL_CONTINUE_BUTTON, self.EXTERNAL_CONTINUE_BUTTON_FALLBACK):
-                            continue_button = self._find_clickable_element(locator, 5)
+                            continue_button = self._find_clickable_element(locator, 2)
                             if continue_button is not None:
                                 continue_button.click()
                                 self.status_queue.put("Modal de compartilhamento de perfil encontrado. Botão 'Continuar' clicado.")
                                 break
-                        time.sleep(2)
-
-                        self._wait_for_external_tab_close(external_window, main_window)
+                        destination_window = self._find_external_destination(main_window, external_window)
+                        if destination_window:
+                            self.driver.switch_to.window(destination_window)
+                            self.status_queue.put(f"Link de candidatura aberto: {sanitize_url(self.driver.current_url)}")
+                            if destination_window == main_window:
+                                # Se o site abriu na mesma aba, recria a busca em outra aba
+                                # para permitir que a pessoa conclua a candidatura externa.
+                                self.driver.switch_to.new_window("tab")
+                                main_window = self.driver.current_window_handle
+                                self.open_url(results_url)
+                                self._wait_for_external_tab_close(destination_window, main_window)
+                            else:
+                                self._wait_for_external_tab_close(destination_window, main_window)
+                        else:
+                            self.status_queue.put("AVISO: O clique não abriu um site externo; os detalhes da vaga continuam disponíveis para conferência.")
+                            self._restore_main_window(main_window)
                         self._confirm_offsite_application()
                     except Exception as e:
-                        self.status_queue.put(f"Não foi possível abrir a candidatura por link: {e}")
+                        self.status_queue.put(f"Não foi possível abrir a candidatura por link: {sanitize_text(e)}")
                         try:
-                            if external_window and external_window in self.driver.window_handles:
+                            folder = save_failure_context(
+                                self.driver, f"vaga_externa_{job_id}", e,
+                                selector=".jobs-search__job-details--wrapper, .jobs-search-results-list",
+                            )
+                            self.status_queue.put(f"HTML sanitizado salvo em: {folder}")
+                        except Exception:
+                            self.status_queue.put("AVISO: Contexto HTML desta falha não pôde ser salvo.")
+                        try:
+                            if external_window and external_window != main_window and external_window in self.driver.window_handles:
                                 self.driver.switch_to.window(external_window)
                                 self.driver.close()
                             self._restore_main_window(main_window)
                         except Exception as restore_error:
-                            self.status_queue.put(f"ERRO: Não foi possível recuperar a aba principal: {restore_error}")
+                            self.status_queue.put(f"ERRO: Não foi possível recuperar a aba principal: {sanitize_text(restore_error)}")
                 
             except (NoSuchElementException, StaleElementReferenceException) as e:
-                self.status_queue.put(f"Item {i+1} não é uma vaga padrão ou está 'stale' ({e.__class__.__name__}). Pulando.")
+                self.status_queue.put(f"Item {i+1} mudou durante a leitura ({e.__class__.__name__}); pulando.")
+                try:
+                    folder = save_failure_context(self.driver, f"vaga_{i+1}", e, selector=".jobs-search-results-list")
+                    self.status_queue.put(f"HTML sanitizado salvo em: {folder}")
+                except Exception:
+                    pass
             
             finally:
                 if job and original_style is not None:
@@ -472,7 +555,6 @@ class JobSearchPage(BasePage):
     def go_to_next_page(self) -> bool:
         try:
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1)
             next_button = self._find_element(self.NEXT_PAGE_BUTTON)
             if next_button.get_attribute("disabled"):
                 self.status_queue.put("Botão 'Avançar' desabilitado. Fim da paginação.")
@@ -489,5 +571,5 @@ class JobSearchPage(BasePage):
             self.status_queue.put("Botão 'Avançar' não encontrado. Fim dos resultados.")
             return False
         except Exception as e:
-            self.status_queue.put(f"Erro ao mudar de página: {e}")
+            self.status_queue.put(f"Erro ao mudar de página: {sanitize_text(e)}")
             return False

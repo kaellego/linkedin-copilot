@@ -12,6 +12,9 @@ from selenium.webdriver.support.ui import Select
 from pages.base_page import BasePage
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 import config
+from utils.debug_artifacts import save_failure_context
+from utils.privacy import sanitize_text
+from utils.privacy import sanitize_text
 
 class JobsPage(BasePage):
     """
@@ -52,17 +55,20 @@ class JobsPage(BasePage):
             try:
                 with open(config.ANSWERS_FILE, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except (json.JSONDecodeError, IOError) as e:
-                self.status_queue.put(f"AVISO: Não foi possível carregar o arquivo de respostas: {e}")
+            except (json.JSONDecodeError, IOError):
+                self.status_queue.put("AVISO: Não foi possível carregar o arquivo de respostas.")
                 return {}
         return {}
 
     def _save_answers(self):
         try:
+            config.ensure_runtime_dirs()
             with open(config.ANSWERS_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.answers, f, indent=4, ensure_ascii=False)
+            if os.name != "nt":
+                os.chmod(config.ANSWERS_FILE, 0o600)
         except IOError as e:
-            self.status_queue.put(f"ERRO: Não foi possível salvar o arquivo de respostas: {e}")
+            self.status_queue.put(f"ERRO: Não foi possível salvar o arquivo de respostas: {sanitize_text(e)}")
 
     def _normalize_question(self, text: str) -> str:
         return text.replace('*', '').strip().lower()
@@ -79,7 +85,7 @@ class JobsPage(BasePage):
                     _ = self.driver.title
                     self.status_queue.put("(Mantendo a sessão ativa...)")
                 except Exception as e:
-                    self.status_queue.put(f"Erro no keep-alive: {e}.")
+                    self.status_queue.put(f"Erro no keep-alive: {sanitize_text(e)}.")
                 if self.stop_event.is_set():
                     raise InterruptedError("Sinal de parada recebido durante a pausa.")
             self.status_queue.put("Status: Retomando...")
@@ -129,7 +135,7 @@ class JobsPage(BasePage):
                                     self.status_queue.put(f"Preenchido '{answer_to_apply}'.")
                     except NoSuchElementException: continue
             except Exception as e:
-                self.status_queue.put(f"Erro ao processar perguntas: {e}")
+                self.status_queue.put(f"Erro ao processar perguntas: {sanitize_text(e)}")
             try:
                 upload_field = self.driver.find_element(*self.UPLOAD_INPUT)
                 if upload_field.is_displayed():
@@ -164,11 +170,12 @@ class JobsPage(BasePage):
             job_count = len(self.driver.find_elements(*self.JOB_LIST_ITEM))
             self.status_queue.put(f"Encontradas {job_count} vagas na página.")
         except TimeoutException:
-            self.status_queue.put("ERRO: A lista de vagas não carregou em 20 segundos.")
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
-            screenshot_path = f'debug_screenshots/vagas_nao_carregadas_{timestamp}.png'
-            self.driver.save_screenshot(screenshot_path)
-            self.status_queue.put(f"Screenshot salvo em: {screenshot_path}")
+            self.status_queue.put("ERRO: A lista de vagas não carregou dentro do limite configurado.")
+            folder = save_failure_context(
+                self.driver, "lista_de_vagas", "lista de vagas não carregou",
+                selector=".jobs-search-results-list",
+            )
+            self.status_queue.put(f"HTML sanitizado salvo em: {folder}")
             return False
             
         for i in range(job_count):
@@ -228,11 +235,10 @@ class JobsPage(BasePage):
                             self.status_queue.put("VAGA NORMAL: Abrindo em nova aba para candidatura manual...")
                             self.driver.switch_to.new_window('tab')
                             self.driver.get(job_url)
-                            time.sleep(2) # Pausa para o usuário ver a aba
                             self.driver.switch_to.window(main_window)
                             continue # Pula para a próxima vaga da lista
                         except Exception as e:
-                            self.status_queue.put(f"Não foi possível abrir a vaga normal em nova aba: {e}")
+                            self.status_queue.put(f"Não foi possível abrir a vaga normal em nova aba: {sanitize_text(e)}")
                             continue
                 
                 else: # MODO SIMPLIFICADO: O usuário quer APENAS as vagas simplificadas.
@@ -251,7 +257,6 @@ class JobsPage(BasePage):
             modal_is_open = False
             try:
                 self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", job)
-                time.sleep(0.5)
                 job.click()
                 self.wait.until(EC.element_to_be_clickable(self.APPLY_BUTTON)).click()
                 modal_is_open = True
@@ -267,23 +272,29 @@ class JobsPage(BasePage):
                 self.status_queue.put(str(e))
                 break 
             except Exception as e:
-                self.status_queue.put(f"ERRO ao processar vaga {i+1}: {e}.")
+                self.status_queue.put(f"ERRO ao processar vaga {i+1}: {sanitize_text(e)}.")
+                try:
+                    folder = save_failure_context(self.driver, f"vaga_{i+1}", e)
+                    self.status_queue.put(f"HTML sanitizado salvo em: {folder}")
+                except Exception:
+                    pass
             
             finally:
                 if modal_is_open:
                     self.status_queue.put("Fechando modal de candidatura...")
                     try:
-                        time.sleep(2) 
                         close_button = self.wait.until(EC.element_to_be_clickable(self.CLOSE_MODAL_BUTTON))
                         close_button.click()
-                        time.sleep(1)
                         try:
-                            discard_button = self.driver.find_element(*self.DISCARD_BUTTON)
-                            if discard_button.is_displayed():
-                                discard_button.click()
-                                self.status_queue.put("Confirmação de descarte clicada.")
+                            discard_button = WebDriverWait(self.driver, 2, poll_frequency=0.2).until(
+                                EC.element_to_be_clickable(self.DISCARD_BUTTON)
+                            )
+                            discard_button.click()
+                            self.status_queue.put("Confirmação de descarte clicada.")
                         except (NoSuchElementException, TimeoutException):
-                            pass 
+                            WebDriverWait(self.driver, 3, poll_frequency=0.2).until(
+                                EC.invisibility_of_element_located(self.MODAL_CONTENT)
+                            )
                     except Exception:
                         self.status_queue.put("Modal provavelmente fechou automaticamente.")
         return False
@@ -291,7 +302,6 @@ class JobsPage(BasePage):
     def go_to_next_page(self) -> bool:
         try:
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1)
             next_button = self._find_element(self.NEXT_PAGE_BUTTON)
             if next_button.get_attribute("disabled"):
                 self.status_queue.put("Botão 'Avançar' desabilitado. Fim da paginação.")
@@ -308,5 +318,5 @@ class JobsPage(BasePage):
             self.status_queue.put("Botão 'Avançar' não encontrado. Fim dos resultados.")
             return False
         except Exception as e:
-            self.status_queue.put(f"Erro ao mudar de página: {e}")
+            self.status_queue.put(f"Erro ao mudar de página: {sanitize_text(e)}")
             return False

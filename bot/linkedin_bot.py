@@ -12,6 +12,9 @@ from selenium.webdriver.remote.webdriver import WebDriver
 from pages.login_page import LoginPage
 from pages.job_search_page import JobSearchPage
 import config
+from utils.privacy import sanitize_url, sanitize_text
+from utils.debug_artifacts import save_failure_context
+from utils.privacy import sanitize_text
 
 class LinkedinBot:
     """
@@ -64,17 +67,18 @@ class LinkedinBot:
 
     def run(self):
         try:
+            config.validate_runtime_config()
+            config.ensure_runtime_dirs()
             self.status_queue.put("Iniciando o Copiloto LinkedIn...")
             
             self.status_queue.put("Verificando status do login na página atual...")
             if "linkedin.com" not in self.driver.current_url:
                 self._open_url_with_retry("https://www.linkedin.com/feed/")
-                time.sleep(2)
 
             if not self._is_logged_in():
                 self.status_queue.put(
                     "ERRO: O navegador conectado na porta 9222 não está logado no LinkedIn. "
-                    f"URL atual: {self.driver.current_url}. "
+                    f"URL atual: {sanitize_url(self.driver.current_url)}. "
                     "Faça login nesse mesmo perfil do Chrome e reinicie o robô."
                 )
                 return
@@ -138,12 +142,11 @@ class LinkedinBot:
             self.status_queue.put("--- FIM DO PROCESSO ---")
 
         except InterruptedError as e:
-            self.status_queue.put(f"Processo finalizado pelo usuário: {e}")
+            self.status_queue.put(f"Processo finalizado pelo usuário: {sanitize_text(e)}")
         except Exception as e:
-            self.status_queue.put(f"ERRO FATAL: {e}")
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            self.status_queue.put(f"ERRO FATAL: {sanitize_text(e)}")
             try:
-                self.driver.save_screenshot(f'debug_screenshots/fatal_error_{timestamp}.png')
-                self.status_queue.put(f"Screenshot salvo: {timestamp}.png")
-            except Exception as screenshot_error:
-                self.status_queue.put(f"Falha ao salvar screenshot: {screenshot_error}")
+                folder = save_failure_context(self.driver, "bot_fatal", e)
+                self.status_queue.put(f"Contexto HTML sanitizado salvo em: {folder}")
+            except Exception:
+                self.status_queue.put("Falha ao salvar contexto da execução.")

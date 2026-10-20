@@ -5,6 +5,7 @@ import queue
 import time
 from browser.driver_factory import create_driver
 from bot.linkedin_bot import LinkedinBot
+from utils.privacy import sanitize_text
 
 def bot_thread_worker(status_queue: queue.Queue, pause_event: threading.Event, stop_event: threading.Event):
     """Função que será executada na thread secundária."""
@@ -14,9 +15,9 @@ def bot_thread_worker(status_queue: queue.Queue, pause_event: threading.Event, s
         bot = LinkedinBot(driver, status_queue, pause_event, stop_event)
         bot.run()
     except InterruptedError as e:
-        status_queue.put(f"Processo finalizado pelo usuário: {e}")
+        status_queue.put(f"Processo finalizado pelo usuário: {sanitize_text(e)}")
     except Exception as e:
-        status_queue.put(f"Um erro crítico ocorreu na thread do bot: {e}")
+        status_queue.put(f"Um erro crítico ocorreu na thread do bot: {sanitize_text(e)}")
     finally:
         if driver:
             driver.quit()
