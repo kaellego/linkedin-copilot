@@ -85,6 +85,7 @@ class LinkedinBot:
 
             self.status_queue.put("Sessão válida detectada. Login pulado.")
             current_mode = "easy" if self.application_mode in ("easy", "all") else "link"
+            self.job_search_page._check_control_signals()
             self.job_search_page.search_jobs(
                 config.PALAVRAS_CHAVE,
                 config.LOCALIZACAO,
@@ -92,6 +93,7 @@ class LinkedinBot:
                 easy_apply_mode=self.application_mode == "easy",
                 work_type=config.TIPO_VAGA,
             )
+            self.job_search_page._check_control_signals()
             
             page_number = 1
             while True:
@@ -106,11 +108,13 @@ class LinkedinBot:
                         process_normal_jobs=self.application_mode == "all",
                     )
                     
+                    self.job_search_page._check_control_signals()
                     if status == "LIMIT_REACHED":
                         self.status_queue.put("!!! LIMITE DE CANDIDATURAS ATINGIDO !!!")
                         if self.application_mode == "all":
                             self.status_queue.put("Limite de simplificadas atingido. Processando vagas normais por link nesta página...")
                             self.job_search_page.process_normal_jobs()
+                            self.job_search_page._check_control_signals()
                             current_mode = "link"
                             continue
                         self.status_queue.put("Encerrando: o modo selecionado aceita apenas candidatura simplificada.")
@@ -126,11 +130,15 @@ class LinkedinBot:
                     if self.application_mode == "all" and not normal_jobs_processed:
                         self.status_queue.put("Processando vagas normais por link nesta página...")
                         self.job_search_page.process_normal_jobs()
+                        self.job_search_page._check_control_signals()
                 else:
                     # MODO DE VAGAS NORMAIS
                     self.job_search_page.process_normal_jobs()
+                    self.job_search_page._check_control_signals()
 
+                self.job_search_page._check_control_signals()
                 can_go_next = self.job_search_page.go_to_next_page()
+                self.job_search_page._check_control_signals()
                 if can_go_next:
                     page_number += 1
                 else:

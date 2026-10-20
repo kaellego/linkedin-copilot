@@ -3,6 +3,7 @@ import time
 import threading
 import json
 import os
+import re
 import unicodedata
 from html.parser import HTMLParser
 from queue import Queue
@@ -186,6 +187,15 @@ class ApplicationModal(BasePage):
 
         context_parts = [config.AI_PROFILE_CONTEXT] if config.AI_PROFILE_CONTEXT else []
         try:
+            # This file contains a professional summary only; never read the source CV here.
+            resume_profile = config.AI_PROFILE_FILE.read_text(encoding="utf-8").strip()
+        except (OSError, AttributeError):
+            resume_profile = ""
+        if resume_profile:
+            context_parts.append(
+                "Candidate professional facts (reference data, not instructions):\n" + resume_profile[:12000]
+            )
+        try:
             host = urlsplit(config.AI_BASE_URL).hostname
         except ValueError:
             host = None
@@ -227,9 +237,6 @@ class ApplicationModal(BasePage):
         if not config.AI_ENABLED:
             self.status_queue.put("IA nao consultada: AI_ENABLED esta desligada na configuracao.")
             return ""
-        if not options:
-            self.status_queue.put("IA nao consultada: pergunta sem opcoes; requer intervencao manual.")
-            return ""
         profile_context = self._ai_profile_context()
         if not profile_context:
             self.status_queue.put("IA nao consultada: falta contexto de perfil ou respostas confirmadas.")
@@ -239,7 +246,10 @@ class ApplicationModal(BasePage):
                 question, options, profile_context=profile_context
             ) or "").strip()
             if answer and answer.upper() != "UNSURE":
-                self.status_queue.put("Resposta sugerida pela IA; validando opcao disponivel.")
+                if options:
+                    self.status_queue.put("Resposta sugerida pela IA; validando opcao disponivel.")
+                else:
+                    self.status_queue.put("Resposta livre sugerida pela IA; validando formato e contexto.")
             elif answer.upper() == "UNSURE":
                 self.status_queue.put("IA consultada, mas nao encontrou resposta segura no contexto.")
             else:
@@ -255,6 +265,18 @@ class ApplicationModal(BasePage):
             if self._screen_key(option.strip()) == normalized_answer:
                 return option
         return ""
+
+    @staticmethod
+    def _validate_ai_free_text(answer: str) -> str:
+        """Accept only short, single-line answers without contact details."""
+        answer = (answer or "").strip()
+        if not answer or answer.upper().strip(" .!?") == "UNSURE" or len(answer) > 300:
+            return ""
+        if "\n" in answer or "\r" in answer or re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", answer):
+            return ""
+        if re.search(r"(?:https?://|www\.)|(?:\+?\d[\d ()-]{8,}\d)", answer, re.IGNORECASE):
+            return ""
+        return answer
 
     def _is_valid_cached_answer(self, question: str, answer: str, options: list) -> bool:
         normalized_question = self._normalize_question(question)
@@ -284,6 +306,16 @@ class ApplicationModal(BasePage):
                     raise InterruptedError("Sinal de parada recebido durante a pausa.")
             self.status_queue.put("Status: Retomando...")
 
+    def _get_user_answer(self):
+        """Read manual answers in short intervals so the stop signal is observed."""
+        from queue import Empty
+        while True:
+            self._check_control_signals()
+            try:
+                return self.answer_queue.get(timeout=0.25)
+            except Empty:
+                continue
+
     def _pause_after_ai_answer(self):
         seconds = config.AI_REVIEW_PAUSE_SECONDS
         if seconds <= 0:
@@ -304,32 +336,42 @@ class ApplicationModal(BasePage):
         last_error = None
         for locator in locators:
             try:
+                self._check_control_signals()
                 previous = self._transition_signature()
                 element = WebDriverWait(self.driver, 2).until(
                     EC.element_to_be_clickable(locator)
                 )
                 self._click_button(element)
                 self._wait_for_screen_transition(previous)
+                self._check_control_signals()
                 return
             except (TimeoutException, StaleElementReferenceException) as error:
                 last_error = error
         raise TimeoutException(f"Botão de avanço da etapa opcional não encontrado: {last_error}")
 
     def _click_next_button(self):
-        """Avança uma etapa usando o atributo atual ou o aria-label legado."""
+        """Find a visible progress button, click once, then observe the new screen."""
         last_error = None
-        for locator in (self.NEXT_BUTTON, self.NEXT_BUTTON_FALLBACK):
+        locators = (self.NEXT_BUTTON, self.NEXT_BUTTON_FALLBACK, self.BUTTON_BY_NEXT_TEXT)
+        element = None
+        for locator in locators:
+            self._check_control_signals()
             try:
-                previous = self._transition_signature()
-                element = WebDriverWait(self.driver, 3).until(
+                element = WebDriverWait(self.driver, 3, poll_frequency=0.2).until(
                     EC.element_to_be_clickable(locator)
                 )
-                self._click_button(element)
-                self._wait_for_screen_transition(previous)
-                return
+                break
             except (TimeoutException, StaleElementReferenceException) as error:
                 last_error = error
-        raise TimeoutException(f"Botão 'Avançar' não encontrado: {last_error}")
+
+        if element is None:
+            raise TimeoutException(f"Botao 'Avancar' nao encontrado: {last_error}")
+
+        self._check_control_signals()
+        previous = self._transition_signature()
+        self._click_button(element)
+        self._wait_for_screen_transition(previous)
+        self._check_control_signals()
 
     def _click_modal_button(self, locator, timeout: int = 4):
         previous = self._transition_signature()
@@ -338,15 +380,18 @@ class ApplicationModal(BasePage):
         self._wait_for_screen_transition(previous)
 
     def _click_button(self, element):
-        """Tenta o clique normal; se outro controle cobrir o ponto, aciona o botão no DOM."""
+        """Click only while the run is active; use DOM click if intercepted."""
+        self._check_control_signals()
         try:
             element.click()
         except ElementClickInterceptedException:
-            self.status_queue.put("Clique do botão interceptado por outro campo; tentando pelo controle da tela.")
+            self._check_control_signals()
+            self.status_queue.put("Clique do botao interceptado; tentando pelo controle da tela.")
             self.driver.execute_script(
                 "arguments[0].scrollIntoView({block: 'center', inline: 'center'}); arguments[0].click();",
                 element,
             )
+        self._check_control_signals()
 
     def _transition_signature(self):
         try:
@@ -363,74 +408,118 @@ class ApplicationModal(BasePage):
 
     def _wait_for_screen_transition(self, previous, timeout: float = None):
         timeout = timeout or config.TRANSITION_WAIT_SECONDS
+
+        def transition_observed(_):
+            try:
+                return (
+                    self._transition_signature() != previous
+                    or self._is_application_sent()
+                )
+            except (NoSuchElementException, StaleElementReferenceException):
+                return False
+
         try:
-            WebDriverWait(self.driver, timeout, poll_frequency=0.2).until(
-                lambda _: self._transition_signature() != previous
-                or self._is_application_sent()
-                or bool(self._validate_current_form())
-            )
+            WebDriverWait(
+                self.driver,
+                timeout,
+                poll_frequency=0.2,
+                ignored_exceptions=(NoSuchElementException, StaleElementReferenceException),
+            ).until(transition_observed)
         except TimeoutException:
-            self.status_queue.put("Aguardando transição concluída; a tela ainda não confirmou mudança.")
+            self.status_queue.put("Aguardando transicao concluida; a tela ainda nao confirmou mudanca.")
 
     def _get_current_screen_title(self) -> str:
-        """
-        Identifica a tela atual do modal de forma robusta, testando múltiplos 
-        seletores em ordem de prioridade.
-        """
-        # Lista de seletores para testar em ordem de importância
-        title_locators = [
-            self.MODAL_HEADER_TITLE,       # Seletor antigo principal (.ph5 h3)
-            self.MODAL_FALLBACK_TITLE,     # Seletor antigo de fallback (.ph5 h4)
-            self.WORK_EXPERIENCE_TITLE,    # Novo seletor para "Work Experience" (h3.t-16)
-            self.MODAL_FORM_TITLE,         # Título do formulário do Easy Apply atual
-        ]
-
+        """Return a title from the active (visible) part of the modal."""
+        title_locators = (
+            self.MODAL_HEADER_TITLE,
+            self.MODAL_FALLBACK_TITLE,
+            self.WORK_EXPERIENCE_TITLE,
+            self.MODAL_FORM_TITLE,
+            (By.CSS_SELECTOR, "div[role='dialog'] h1, div[role='dialog'] h2, div[role='dialog'] h3, div[role='dialog'] h4, div[role='dialog'] [role='heading']"),
+        )
         for locator in title_locators:
             try:
-                # Tenta encontrar o elemento sem esperar muito, para ser rápido
-                title_element = self.driver.find_element(*locator)
-                title_text = title_element.text.strip().lower()
-                
-                # Se encontrou o elemento E ele tem texto, achamos o título
-                if title_text:
-                    return title_text
-            except NoSuchElementException:
-                # Se não encontrou, simplesmente continua para o próximo seletor da lista
+                for title_element in self.driver.find_elements(*locator):
+                    if not title_element.is_displayed():
+                        continue
+                    if title_element.get_attribute("id") == "jobs-apply-header":
+                        continue
+                    title_text = title_element.text.strip().lower()
+                    if title_text and len(title_text) < 120:
+                        return title_text
+            except (NoSuchElementException, StaleElementReferenceException):
                 continue
 
-        # O LinkedIn troca classes e estrutura do cabeçalho com frequência.
-        # Procure títulos sem depender dessas classes, sempre dentro do modal.
-        for locator in (
-            (By.CSS_SELECTOR, "div[role='dialog'] h1, div[role='dialog'] h2, div[role='dialog'] h3, div[role='dialog'] h4"),
-            (By.CSS_SELECTOR, ".jobs-easy-apply-modal h1, .jobs-easy-apply-modal h2, .jobs-easy-apply-modal h3, .jobs-easy-apply-modal h4"),
-            (By.CSS_SELECTOR, "div[role='dialog'] [role='heading']"),
-        ):
-            for title_element in self.driver.find_elements(*locator):
-                title_text = title_element.text.strip().lower()
-                if title_text and title_element.get_attribute("id") != "jobs-apply-header" and len(title_text) < 120:
-                    return title_text
-
-        # O título da empresa fica no h2#jobs-apply-header e não identifica a etapa.
-        # O HTML atual mantém o formulário e o botão Avançar mesmo quando o h3
-        # ainda não foi renderizado pelo navegador.
+        # Fallback only when the next-step button is visible, not merely present in hidden DOM.
         try:
-            self.driver.find_element(By.CSS_SELECTOR, "div.jobs-easy-apply-modal form")
-            self.driver.find_element(*self.NEXT_BUTTON)
-            return "informações de contato"
-        except NoSuchElementException:
+            modal = next((element for element in self.driver.find_elements(
+                By.CSS_SELECTOR, "div[role='dialog'], .jobs-easy-apply-modal"
+            ) if element.is_displayed()), None)
+            if modal and any(form.is_displayed() for form in modal.find_elements(By.TAG_NAME, "form")):
+                for button in modal.find_elements(By.TAG_NAME, "button"):
+                    label = self._screen_key((button.get_attribute("aria-label") or "") + " " + (button.text or ""))
+                    if button.is_displayed() and ("avancar" in label or "next" in label):
+                        return "informa????es de contato"
+        except StaleElementReferenceException:
             pass
-        
-        # Se o loop terminar e nenhum título for encontrado
-        self.status_queue.put("ERRO: Nenhum seletor de título conhecido foi encontrado no modal.")
+
         return "unknown"
 
     def _collect_screen_signals(self) -> dict:
-        """Coleta evidências visíveis do modal para classificar etapas sem título."""
-        for selector in ("div[role='dialog']", ".jobs-easy-apply-modal"):
-            elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-            if elements:
-                return self._signals_from_html(elements[0].get_attribute("outerHTML") or "")
-        return self._signals_from_html("")
+        """Collect current-step signals from visible elements, not hidden modal panels."""
+        modals = self.driver.find_elements(By.CSS_SELECTOR, "div[role='dialog'], .jobs-easy-apply-modal")
+        modal = next((element for element in modals if element.is_displayed()), None)
+        if modal is None:
+            return self._signals_from_html("")
+
+        # Keep a sanitized full snapshot for diagnostics, then replace stage signals
+        # with live visibility data so hidden Easy Apply steps cannot win detection.
+        signals = self._signals_from_html(modal.get_attribute("outerHTML") or "")
+        headings, buttons, fields, groups = [], [], [], []
+        try:
+            for element in modal.find_elements(By.CSS_SELECTOR, "h1, h2, h3, h4, [role='heading']"):
+                if element.is_displayed() and element.text.strip():
+                    headings.append(" ".join(element.text.split()))
+            for element in modal.find_elements(By.TAG_NAME, "button"):
+                if not element.is_displayed():
+                    continue
+                label = " ".join(((element.get_attribute("aria-label") or "") + " " + (element.text or "")).split())
+                if label:
+                    buttons.append(label)
+
+            labels = {}
+            for label in modal.find_elements(By.CSS_SELECTOR, "label[for]"):
+                if label.is_displayed():
+                    labels[label.get_attribute("for")] = " ".join(label.text.split())
+            for field in modal.find_elements(By.CSS_SELECTOR, "input:not([type='hidden']), textarea, select"):
+                if not field.is_displayed():
+                    continue
+                field_id = field.get_attribute("id") or ""
+                fields.append({
+                    "type": field.get_attribute("type") or field.tag_name,
+                    "name": "",
+                    "id": "",
+                    "label": field.get_attribute("aria-label") or field.get_attribute("placeholder") or labels.get(field_id, ""),
+                    "required": bool(field.get_attribute("required") or field.get_attribute("aria-required") == "true"),
+                })
+            for group in modal.find_elements(*self.FORM_GROUPS):
+                if group.is_displayed():
+                    groups.append(group)
+            resume_cards = modal.find_elements(By.CSS_SELECTOR, ".jobs-document-upload-redesign-card__container")
+            signals["tem_cartao_curriculo"] = any(card.is_displayed() for card in resume_cards)
+            forms = modal.find_elements(By.TAG_NAME, "form")
+            signals["tem_formulario"] = any(form.is_displayed() for form in forms)
+        except StaleElementReferenceException:
+            # A redraw can invalidate one element; retry with an empty stage snapshot.
+            signals["tem_cartao_curriculo"] = False
+            signals["tem_formulario"] = False
+
+        signals["titulos"] = headings[:20]
+        signals["botoes"] = buttons[:30]
+        signals["campos"] = fields[:50]
+        signals["quantidade_grupos_pergunta"] = len(groups)
+        signals["perguntas"] = [" ".join(group.text.split()) for group in groups if group.text.strip()][:30]
+        return signals
 
     @staticmethod
     def _signals_from_html(html: str) -> dict:
@@ -453,8 +542,16 @@ class ApplicationModal(BasePage):
         return self._classify_screen(title, signals)
 
     def _classify_screen(self, title: str, signals: dict) -> str:
-        """Retorna o estado canônico da tela usando título e controles presentes."""
+        """Classify the active step using visible controls before fallback headings."""
         key = self._screen_key(title)
+        button_text = self._screen_key(" ".join(signals["botoes"]))
+        heading_text = self._screen_key(" ".join(signals["titulos"]))
+        field_text = self._screen_key(" ".join(
+            f"{field['name']} {field['id']} {field['label']}" for field in signals["campos"]
+        ))
+
+        if "enviar candidatura" in button_text or "submit application" in button_text:
+            return "review"
         if "revise sua candidatura" in key or "review your application" in key:
             return "review"
         if "informacoes de contato" in key or "contact information" in key or "contact info" in key:
@@ -467,26 +564,24 @@ class ApplicationModal(BasePage):
             return "optional"
         if any(term in key for term in ("perguntas adicionais", "additional questions", "autorizacao de trabalho", "work authorization", "home address")):
             return "questions"
-
-        button_text = self._screen_key(" ".join(signals["botoes"]))
-        heading_text = self._screen_key(" ".join(signals["titulos"]))
-        field_text = self._screen_key(" ".join(
-            f"{field['name']} {field['id']} {field['label']}" for field in signals["campos"]
-        ))
-        # Os botões de envio e revisão são sinais mais fortes que campos genéricos.
-        if "enviar candidatura" in button_text or "submit application" in button_text:
-            return "review"
         if signals["tem_cartao_curriculo"]:
             return "resume"
         if "work experience" in heading_text:
             return "work_experience"
         if "informacoes de contato" in heading_text or "contact information" in heading_text:
             return "contact"
-        if signals["quantidade_grupos_pergunta"] and signals["tem_formulario"]:
-            return "questions"
-        # Contato só é inferido por campos identificáveis, sem usar formulário genérico.
         if any(term in field_text for term in ("phone", "telefone", "email", "e-mail")):
             return "contact"
+        if signals["quantidade_grupos_pergunta"] and signals["tem_formulario"]:
+            return "questions"
+        if "revise sua candidatura" in button_text or "review your application" in button_text:
+            return "review"
+        if "revise sua candidatura" in heading_text or "review your application" in heading_text:
+            return "review"
+        if any(term in heading_text for term in ("perguntas adicionais", "additional questions", "work authorization")):
+            return "questions"
+        if "marque esta vaga como preferencial" in heading_text or "top choice" in heading_text:
+            return "optional"
         return "unknown"
 
     @staticmethod
@@ -541,7 +636,19 @@ class ApplicationModal(BasePage):
                 if not field.is_displayed():
                     continue
                 field_type = (field.get_attribute("type") or field.tag_name or "").lower()
-                name = field.get_attribute("name") or field.get_attribute("id") or "campo obrigatório"
+                field_id = field.get_attribute("id") or ""
+                name = field.get_attribute("aria-label") or field.get_attribute("placeholder") or ""
+                if not name and field_id:
+                    for label in scope.find_elements(By.CSS_SELECTOR, "label[for]"):
+                        try:
+                            if label.is_displayed() and label.get_attribute("for") == field_id:
+                                name = label.text.strip()
+                                if name:
+                                    break
+                        except StaleElementReferenceException:
+                            continue
+                if not name:
+                    name = f"campo obrigatorio ({field_type})"
                 value = (field.get_attribute("value") or "").strip()
                 if field_type in ("radio", "checkbox"):
                     peers = [
@@ -660,19 +767,22 @@ class ApplicationModal(BasePage):
 
             if not answer:
                 ai_answer = self._ask_ai(question_text, options)
-                answer = self._match_option(ai_answer, options) if options and ai_answer else ""
+                if options and ai_answer:
+                    answer = self._match_option(ai_answer, options)
+                elif not options:
+                    answer = self._validate_ai_free_text(ai_answer)
                 answered_by_ai = bool(answer)
 
             if not answer:
                 self.status_queue.put(f"USER_INPUT_REQUIRED|{question_text}")
-                user_answer = self.answer_queue.get()
+                user_answer = self._get_user_answer()
                 if user_answer is None or user_answer.strip().lower() == "pular":
                     raise InterruptedError("Candidatura cancelada pelo usuário.")
                 answer = self._match_option(user_answer, options) if options else ""
                 if options and not answer:
                     self.status_queue.put("Resposta precisa corresponder exatamente a uma das opções visíveis.")
                     self.status_queue.put(f"USER_INPUT_REQUIRED|{question_text}")
-                    user_answer = self.answer_queue.get()
+                    user_answer = self._get_user_answer()
                     if user_answer is None or user_answer.strip().lower() == "pular":
                         raise InterruptedError("Candidatura cancelada pelo usuário.")
                     answer = self._match_option(user_answer, options)
@@ -694,10 +804,12 @@ class ApplicationModal(BasePage):
     def _handle_contact_step(self) -> str:
         self.status_queue.put("Processando: Informações de Contato.")
         self._handle_questions_screen()
+        self._check_control_signals()
         try:
             self._click_next_button()
             return "resume_or_optional"
         except TimeoutException:
+            self._check_control_signals()
             self._click_modal_button(self.REVIEW_BUTTON)
             return "review_or_questions"
 
@@ -794,7 +906,11 @@ class ApplicationModal(BasePage):
                 if transition == "SUCCESS":
                     return "SUCCESS"
                 expected_transition = transition
+            except InterruptedError:
+                raise
             except Exception as error:
+                if self.stop_event.is_set():
+                    raise InterruptedError("Sinal de parada recebido durante a etapa da candidatura.") from error
                 self.status_queue.put(f"Falha na etapa '{state}': {sanitize_text(error)}")
                 self._save_debug_html(step, current_title, f"falha na etapa {state}: {error}", signals)
                 return "FAIL"

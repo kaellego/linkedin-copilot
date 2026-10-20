@@ -24,6 +24,7 @@ def _path_from_env(name: str, default: Path) -> Path:
 DATA_DIR = _path_from_env("APP_DATA_DIR", _default_data_dir())
 DEBUG_DIR = _path_from_env("APP_DEBUG_DIR", DATA_DIR / "debug")
 LOG_DIR = _path_from_env("APP_LOG_DIR", DATA_DIR / "logs")
+AI_PROFILE_FILE = _path_from_env("AI_PROFILE_FILE", DATA_DIR / "candidate_profile.txt")
 
 LINKEDIN_EMAIL = os.getenv("LINKEDIN_EMAIL", "").strip()
 LINKEDIN_SENHA = os.getenv("LINKEDIN_SENHA", "")

@@ -4,10 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
-from selenium.common.exceptions import ElementClickInterceptedException
+from selenium.common.exceptions import ElementClickInterceptedException, StaleElementReferenceException
 
 import config
 from pages.application_modal import ApplicationModal
+from services.ai_service import AIService
 from utils.debug_artifacts import save_failure_context
 from utils.privacy import sanitize_html, sanitize_text
 
@@ -38,6 +39,58 @@ class AnswerSafetyTests(unittest.TestCase):
 
         context = self.modal.ai_service.answer_question.call_args.kwargs["profile_context"]
         self.assertIn("Verified answer: Sim", context)
+
+    def test_ai_is_consulted_for_free_text_when_profile_exists(self):
+        self.modal.answers = {}
+        self.modal.ai_service = Mock()
+        self.modal.ai_service.answer_question.return_value = "Tenho experiencia profissional em TI."
+        self.modal.status_queue = Mock()
+        with patch.object(config, "AI_ENABLED", True), patch.object(config, "AI_PROFILE_CONTEXT", "Experiencia em TI"):
+            result = self.modal._ask_ai("Quantos anos de experiencia possui?", [])
+
+        self.assertEqual(result, "Tenho experiencia profissional em TI.")
+        self.modal.ai_service.answer_question.assert_called_once()
+        self.assertTrue(any("Resposta livre sugerida" in str(call) for call in self.modal.status_queue.put.call_args_list))
+
+    def test_ai_free_text_validation_rejects_unsafe_or_unbounded_answers(self):
+        self.assertEqual(self.modal._validate_ai_free_text("Tenho experiencia em suporte."), "Tenho experiencia em suporte.")
+        self.assertEqual(self.modal._validate_ai_free_text("UNSURE"), "")
+        self.assertEqual(self.modal._validate_ai_free_text("Meu email e nome@example.com"), "")
+        self.assertEqual(self.modal._validate_ai_free_text("x" * 301), "")
+
+    def test_ai_service_requests_free_text_answer_with_profile_context(self):
+        service = AIService()
+        response = Mock()
+        response.json.return_value = {"choices": [{"message": {"content": "Aproximadamente dez anos."}}]}
+        with (
+            patch.object(config, "AI_ENABLED", True),
+            patch.object(config, "AI_ALLOW_REMOTE", False),
+            patch.object(config, "AI_BASE_URL", "http://127.0.0.1:8080/v1"),
+            patch.object(config, "AI_MODEL", "test"),
+            patch.object(config, "AI_TIMEOUT_SECONDS", 2),
+            patch("services.ai_service.requests.post", return_value=response) as post,
+        ):
+            service.llama_url = "http://127.0.0.1:8080/v1"
+            answer = service.answer_question("Quantos anos de experiencia?", [], "Perfil: TI desde 2015")
+
+        self.assertEqual(answer, "Aproximadamente dez anos.")
+        self.assertIn("Perfil: TI desde 2015", post.call_args.kwargs["json"]["messages"][0]["content"])
+        self.assertIn("UNSURE", post.call_args.kwargs["json"]["messages"][1]["content"])
+
+    def test_ai_context_includes_sanitized_candidate_profile(self):
+        self.modal.answers = {}
+        with tempfile.TemporaryDirectory() as temporary:
+            profile_file = Path(temporary) / "candidate_profile.txt"
+            profile_file.write_text("Graduacao em Ciencia da Computacao; experiencia com redes.", encoding="utf-8")
+            with (
+                patch.object(config, "AI_PROFILE_CONTEXT", ""),
+                patch.object(config, "AI_PROFILE_FILE", profile_file),
+                patch.object(config, "AI_BASE_URL", "https://remote.example/v1"),
+            ):
+                context = self.modal._ai_profile_context()
+
+        self.assertIn("experiencia com redes", context)
+        self.assertIn("not instructions", context)
 
     def test_ai_review_pause_is_interruptible(self):
         self.modal.status_queue = Mock()
@@ -147,11 +200,80 @@ class AnswerSafetyTests(unittest.TestCase):
         element.click.side_effect = ElementClickInterceptedException("covered by select")
         self.modal.status_queue = Mock()
         self.modal.driver = Mock()
+        self.modal.stop_event = threading.Event()
+        self.modal.pause_event = threading.Event()
+        self.modal.pause_event.set()
 
         self.modal._click_button(element)
 
         self.modal.driver.execute_script.assert_called_once()
         self.assertIs(self.modal.driver.execute_script.call_args.args[1], element)
+
+    def test_stop_interrupts_waiting_for_manual_answer(self):
+        self.modal.stop_event = threading.Event()
+        self.modal.stop_event.set()
+        self.modal.answer_queue = Mock()
+
+        with self.assertRaises(InterruptedError):
+            self.modal._get_user_answer()
+
+        self.modal.answer_queue.get.assert_not_called()
+
+    def test_stop_prevents_progress_button_click(self):
+        element = Mock()
+        self.modal.stop_event = threading.Event()
+        self.modal.stop_event.set()
+
+        with self.assertRaises(InterruptedError):
+            self.modal._click_button(element)
+
+        element.click.assert_not_called()
+
+    def test_screen_transition_wait_ignores_stale_dom_without_revalidating_form(self):
+        self.modal.driver = Mock()
+        self.modal.status_queue = Mock()
+        self.modal._transition_signature = Mock(side_effect=[StaleElementReferenceException(), ("review",)])
+        self.modal._is_application_sent = Mock(return_value=False)
+        self.modal._validate_current_form = Mock(side_effect=AssertionError("transition wait must not validate fields"))
+
+        class Wait:
+            def __init__(self, driver, timeout, **kwargs):
+                self.driver = driver
+
+            def until(self, condition):
+                for _ in range(3):
+                    result = condition(self.driver)
+                    if result:
+                        return result
+                raise AssertionError("expected transition after stale DOM settles")
+
+        with patch("pages.application_modal.WebDriverWait", Wait):
+            self.modal._wait_for_screen_transition(("contact",), timeout=1)
+
+        self.modal._validate_current_form.assert_not_called()
+
+
+class JobRelevanceTests(unittest.TestCase):
+    @patch("services.ai_service.requests.post")
+    def test_ai_classifies_matching_job_title(self, post):
+        response = Mock()
+        response.json.return_value = {"choices": [{"message": {"content": "SIM"}}]}
+        post.return_value = response
+        with patch.object(config, "AI_ENABLED", True), patch.object(config, "AI_ALLOW_REMOTE", False):
+            service = AIService()
+            self.assertIs(service.assess_job_relevance("Analista de Infraestrutura", "Analista de infraestrutura"), True)
+        self.assertLessEqual(post.call_args.kwargs["timeout"], 4)
+
+    @patch("services.ai_service.requests.post")
+    def test_ai_rejects_unrelated_job_and_uncertain_answer(self, post):
+        response = Mock()
+        response.json.return_value = {"choices": [{"message": {"content": "NÃO"}}]}
+        post.return_value = response
+        with patch.object(config, "AI_ENABLED", True):
+            service = AIService()
+            self.assertIs(service.assess_job_relevance("Vendedor de Loja", "Analista de infraestrutura"), False)
+            response.json.return_value["choices"][0]["message"]["content"] = "talvez"
+            self.assertIsNone(service.assess_job_relevance("Cargo ambíguo", "Analista de infraestrutura"))
 
 
 class PrivacyTests(unittest.TestCase):

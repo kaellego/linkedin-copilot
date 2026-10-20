@@ -14,6 +14,7 @@ from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support.ui import Select, WebDriverWait
 from pages.base_page import BasePage
 from pages.application_modal import ApplicationModal
+from services.ai_service import AIService
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException, WebDriverException
 from utils.debug_artifacts import save_failure_context
 from utils.privacy import sanitize_text, sanitize_url
@@ -55,6 +56,35 @@ class JobSearchPage(BasePage):
         self.applied_job_ids = self._load_applied_jobs()
         self.location_keywords = config.LOCATIONS_KEYWORDS
         self.work_type = "Todas"
+        self.ai_service = AIService()
+
+    def _job_title(self, job) -> str:
+        try:
+            title = job.find_element(*self.JOB_TITLE_LINK)
+            return " ".join((title.get_attribute("aria-label") or title.text or "").split())
+        except (NoSuchElementException, StaleElementReferenceException):
+            return ""
+
+    def _is_job_relevant(self, job) -> bool:
+        title = self._job_title(job)
+        if not title:
+            self.status_queue.put("Pulando vaga: nao foi possivel ler o titulo para avaliar relevancia.")
+            return False
+        try:
+            relevant = self.ai_service.assess_job_relevance(title, config.PALAVRAS_CHAVE)
+            self._check_control_signals()
+        except InterruptedError:
+            raise
+        except Exception:
+            relevant = None
+        if relevant is True:
+            self.status_queue.put(f"Relevancia confirmada pela IA: '{sanitize_text(title)}'.")
+            return True
+        if relevant is False:
+            self.status_queue.put(f"Vaga ignorada pela IA: '{sanitize_text(title)}' nao corresponde ao alvo configurado.")
+        else:
+            self.status_queue.put(f"Vaga ignorada: IA indisponivel ou relevancia incerta para '{sanitize_text(title)}'.")
+        return False
 
     def _matches_work_type(self, location_text: str) -> bool:
         """Confere a modalidade exibida no card da vaga."""
@@ -138,6 +168,8 @@ class JobSearchPage(BasePage):
     def _confirm_offsite_application(self):
         """Clica em ?Sim? quando o LinkedIn pergunta se a candidatura externa foi conclu?da."""
         confirm_button = self._find_clickable_element(self.OFFSITE_APPLY_CONFIRMATION_YES, 12)
+        if getattr(self, "stop_event", None) is not None and self.stop_event.is_set():
+            raise InterruptedError("Sinal de parada recebido.")
         if confirm_button is None:
             self.status_queue.put("AVISO: Banner 'Voc? se candidatou?' n?o apareceu; n?o foi poss?vel confirmar com 'Sim'.")
             return False
@@ -148,6 +180,8 @@ class JobSearchPage(BasePage):
     def _find_clickable_element(self, locator, timeout: int):
         """Encontra um botão visível sem avaliar um elemento nulo durante atualizações do DOM."""
         def find_clickable(driver):
+            if getattr(self, "stop_event", None) is not None and self.stop_event.is_set():
+                raise InterruptedError("Sinal de parada recebido.")
             try:
                 elements = driver.find_elements(*locator)
                 for element in elements:
@@ -174,15 +208,23 @@ class JobSearchPage(BasePage):
 
     def _click_external_apply_button(self, element):
         """Clica no botão externo e usa JavaScript se o layout bloquear o clique nativo."""
+        if getattr(self, "stop_event", None) is not None and self.stop_event.is_set():
+            raise InterruptedError("Sinal de parada recebido.")
         try:
             element.click()
         except WebDriverException:
+            if getattr(self, "stop_event", None) is not None and self.stop_event.is_set():
+                raise InterruptedError("Sinal de parada recebido.")
             self.driver.execute_script("arguments[0].click();", element)
+        if getattr(self, "stop_event", None) is not None and self.stop_event.is_set():
+            raise InterruptedError("Sinal de parada recebido.")
 
     def _find_external_destination(self, main_window: str, job_window: str, timeout: int = 8):
         """Encontra a aba do empregador aberta pelo botão externo do LinkedIn."""
         deadline = time.time() + timeout
         while time.time() < deadline:
+            if getattr(self, "stop_event", None) is not None and self.stop_event.is_set():
+                raise InterruptedError("Sinal de parada recebido.")
             handles = self.driver.window_handles
             destination_tabs = [handle for handle in handles if handle not in (main_window, job_window)]
             if destination_tabs:
@@ -367,16 +409,23 @@ class JobSearchPage(BasePage):
                     self.status_queue.put(f"Pulando vaga. Modalidade '{location_element.text}' não corresponde ao filtro '{self.work_type}'.")
                     continue
                 
+                if not self._is_job_relevant(job):
+                    continue
+
                 self.status_queue.put(f"Localização OK: '{location_element.text}'. Processando candidatura...")
 
                 modal_is_open = False
                 try:
+                    self._check_control_signals()
                     job.click()
+                    self._check_control_signals()
                     self.wait.until(EC.element_to_be_clickable(self.APPLY_BUTTON)).click()
                     modal_is_open = True
+                    self._check_control_signals()
                     
                     application_modal = ApplicationModal(self.driver, self.status_queue, self.answer_queue, self.pause_event, self.stop_event, self.answers)
                     status = application_modal.process_application(curriculum_path)
+                    self._check_control_signals()
                     
                     if status == "SUCCESS":
                         modal_is_open = False
@@ -389,6 +438,9 @@ class JobSearchPage(BasePage):
                     self.status_queue.put(str(e))
                     break 
                 except Exception as e:
+                    if self.stop_event.is_set():
+                        self.status_queue.put("Parada solicitada; interrompendo o processamento de vagas.")
+                        break
                     self.status_queue.put(f"ERRO ao processar vaga: {sanitize_text(e)}.")
                     try:
                         folder = save_failure_context(self.driver, f"vaga_simplificada_{job_id}", e)
@@ -397,7 +449,7 @@ class JobSearchPage(BasePage):
                         pass
                 
                 finally:
-                    if modal_is_open:
+                    if modal_is_open and not self.stop_event.is_set():
                         self.status_queue.put("Fechando modal de candidatura...")
                         try:
                             close_button = self.wait.until(EC.element_to_be_clickable(self.CLOSE_MODAL_BUTTON))
@@ -420,7 +472,7 @@ class JobSearchPage(BasePage):
                 self.status_queue.put(f"Item {i+1} não é uma vaga padrão ou está 'stale' ({e.__class__.__name__}). Pulando.")
             
             finally:
-                if job and original_style is not None:
+                if job and original_style is not None and not self.stop_event.is_set():
                     try: self._unhighlight_element(job, original_style)
                     except StaleElementReferenceException: pass
 
@@ -467,6 +519,9 @@ class JobSearchPage(BasePage):
                     self.status_queue.put(f"Pulando vaga. Modalidade '{location_element.text}' não corresponde ao filtro '{self.work_type}'.")
                     continue
                 
+                if not self._is_job_relevant(job):
+                    continue
+
                 self.status_queue.put(f"Localização OK: '{location_element.text}'.")
 
                 try:
@@ -482,18 +537,23 @@ class JobSearchPage(BasePage):
                         except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
                             self.driver.execute_script("arguments[0].click();", job)
                         details_panel = self._wait_for_job_details(job)
+                        self._check_control_signals()
                         details_button = WebDriverWait(self.driver, 5, poll_frequency=0.2).until(
                             lambda _: next((button for button in details_panel.find_elements(*self.EXTERNAL_APPLY_BUTTON_ID)
                                             if button.is_displayed() and button.is_enabled()), False)
                         )
 
+                        self._check_control_signals()
                         self.status_queue.put("Painel da vaga aberto. Clicando em 'Candidatar-se'...")
                         self._click_external_apply_button(details_button)
+                        self._check_control_signals()
                         self.status_queue.put("Botão externo 'Candidatar-se' clicado.")
                         for locator in (self.EXTERNAL_CONTINUE_BUTTON, self.EXTERNAL_CONTINUE_BUTTON_FALLBACK):
                             continue_button = self._find_clickable_element(locator, 2)
+                            self._check_control_signals()
                             if continue_button is not None:
                                 continue_button.click()
+                                self._check_control_signals()
                                 self.status_queue.put("Modal de compartilhamento de perfil encontrado. Botão 'Continuar' clicado.")
                                 break
                         destination_window = self._find_external_destination(main_window, external_window)
@@ -511,8 +571,12 @@ class JobSearchPage(BasePage):
                         else:
                             self.status_queue.put("AVISO: O clique não abriu um site externo; os detalhes da vaga continuam disponíveis para conferência.")
                             self._restore_main_window(main_window)
+                        self._check_control_signals()
                         self._confirm_offsite_application()
                     except Exception as e:
+                        if self.stop_event.is_set():
+                            self.status_queue.put("Parada solicitada; nenhuma outra vaga sera processada.")
+                            break
                         self.status_queue.put(f"Não foi possível abrir a candidatura por link: {sanitize_text(e)}")
                         try:
                             folder = save_failure_context(
@@ -542,12 +606,13 @@ class JobSearchPage(BasePage):
                     pass
             
             finally:
-                if job and original_style is not None:
+                if job and original_style is not None and not self.stop_event.is_set():
                     try: self._unhighlight_element(job, original_style)
                     except StaleElementReferenceException: pass
 
     def go_to_next_page(self) -> bool:
         try:
+            self._check_control_signals()
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             next_button = self._find_element(self.NEXT_PAGE_BUTTON)
             if next_button.get_attribute("disabled"):
