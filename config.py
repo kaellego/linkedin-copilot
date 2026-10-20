@@ -1,6 +1,7 @@
 """Application settings. Personal values are loaded from the local .env file."""
 
 import os
+import json
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -42,7 +43,18 @@ _AI_EXCLUDED_ROLE_TERMS_ENV = tuple(
     for term in os.getenv("AI_EXCLUDED_ROLE_TERMS", "").split(",")
     if term.strip()
 )
-AI_EXCLUDED_ROLE_TERMS = _AI_EXCLUDED_ROLE_TERMS_ENV or None
+AI_EXCLUDED_ROLE_TERMS_FILE = DATA_DIR / "excluded_role_terms.json"
+if AI_EXCLUDED_ROLE_TERMS_FILE.is_file():
+    try:
+        _saved_excluded_terms = json.loads(AI_EXCLUDED_ROLE_TERMS_FILE.read_text(encoding="utf-8"))
+        AI_EXCLUDED_ROLE_TERMS = tuple(
+            term.strip() for term in _saved_excluded_terms
+            if isinstance(term, str) and term.strip()
+        ) if isinstance(_saved_excluded_terms, list) else None
+    except (OSError, json.JSONDecodeError):
+        AI_EXCLUDED_ROLE_TERMS = None
+else:
+    AI_EXCLUDED_ROLE_TERMS = _AI_EXCLUDED_ROLE_TERMS_ENV or None
 
 PALAVRAS_CHAVE = os.getenv("PALAVRAS_CHAVE", "Analista de infraestrutura")
 LOCALIZACAO = os.getenv("LOCALIZACAO", "Brasil")

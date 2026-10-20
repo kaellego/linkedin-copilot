@@ -7,6 +7,7 @@ import time
 import socket
 import subprocess
 import logging
+import json
 from browser.driver_factory import create_driver
 from bot.linkedin_bot import LinkedinBot
 from services.ai_service import AIService
@@ -150,7 +151,7 @@ class ControlPanelApp(tk.Tk):
 
         dialog = tk.Toplevel(self)
         dialog.title("Selecionar cargos a excluir")
-        dialog.geometry("520x480")
+        dialog.geometry("560x540")
         dialog.transient(self)
         dialog.grab_set()
 
@@ -159,6 +160,12 @@ class ControlPanelApp(tk.Tk):
             text="Selecione títulos que devem ser ignorados na avaliação de relevância.",
             wraplength=490,
         ).pack(padx=12, pady=(12, 6), anchor="w")
+        add_frame = tk.Frame(dialog)
+        add_frame.pack(fill=tk.X, padx=12, pady=(0, 6))
+        new_terms_entry = tk.Entry(add_frame)
+        new_terms_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        new_terms_entry.insert(0, "Digite cargos separados por vírgula")
+
         list_frame = tk.Frame(dialog)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=6)
         scrollbar = tk.Scrollbar(list_frame)
@@ -168,11 +175,33 @@ class ControlPanelApp(tk.Tk):
         scrollbar.config(command=listbox.yview)
 
         terms = list(dict.fromkeys((*DEFAULT_EXCLUDED_ROLE_TERMS, *self.excluded_role_terms)))
+        known_terms = {term.casefold() for term in terms}
         selected = set(self.excluded_role_terms)
         for index, term in enumerate(terms):
             listbox.insert(tk.END, term)
             if term in selected:
                 listbox.selection_set(index)
+
+        def add_terms():
+            raw_value = new_terms_entry.get().strip()
+            if raw_value == "Digite cargos separados por vírgula":
+                return
+            added_indices = []
+            for candidate in raw_value.split(","):
+                term = candidate.strip()
+                key = term.casefold()
+                if not term or key in known_terms:
+                    continue
+                known_terms.add(key)
+                terms.append(term)
+                listbox.insert(tk.END, term)
+                added_indices.append(len(terms) - 1)
+            for index in added_indices:
+                listbox.selection_set(index)
+            new_terms_entry.delete(0, tk.END)
+
+        tk.Button(add_frame, text="Adicionar", command=add_terms).pack(side=tk.LEFT, padx=(6, 0))
+        new_terms_entry.bind("<Return>", lambda _event: add_terms())
 
         actions = tk.Frame(dialog)
         actions.pack(fill=tk.X, padx=12, pady=(0, 12))
@@ -180,7 +209,22 @@ class ControlPanelApp(tk.Tk):
         tk.Button(actions, text="Limpar", command=lambda: listbox.selection_clear(0, tk.END)).pack(side=tk.LEFT, padx=6)
 
         def apply_selection():
-            self.excluded_role_terms = tuple(terms[index] for index in listbox.curselection())
+            selected_terms = tuple(terms[index] for index in listbox.curselection())
+            try:
+                config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+                config.AI_EXCLUDED_ROLE_TERMS_FILE.write_text(
+                    json.dumps(selected_terms, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                messagebox.showerror(
+                    "Não foi possível salvar",
+                    f"Não foi possível salvar os cargos excluídos: {exc}",
+                    parent=dialog,
+                )
+                return
+            config.AI_EXCLUDED_ROLE_TERMS = selected_terms
+            self.excluded_role_terms = selected_terms
             self.excluded_terms_summary_var.set(f"{len(self.excluded_role_terms)} selecionados")
             dialog.destroy()
 

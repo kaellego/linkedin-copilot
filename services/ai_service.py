@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
+import re
 from urllib.parse import urlsplit
 
 import requests
@@ -166,9 +167,12 @@ class AIService:
 
     @classmethod
     def _contains_term(cls, text: str, term: str) -> bool:
-        normalized_text = f" {cls._normalize_relevance_text(text)} "
-        normalized_term = f" {cls._normalize_relevance_text(term)} "
-        return normalized_term in normalized_text
+        normalized_text = cls._normalize_relevance_text(text)
+        normalized_term = cls._normalize_relevance_text(term)
+        # In Portuguese, "engenheiro(a)" is commonly used as shorthand for
+        # both "engenheiro" and "engenheira". Match either spelling.
+        pattern = re.escape(normalized_term).replace(r"o\(a\)", r"(?:o|a)")
+        return bool(re.search(rf"(?<!\w){pattern}(?!\w)", normalized_text))
 
     def _has_unrelated_role_marker(self, job_title: str, target_keywords: str) -> bool:
         return any(
