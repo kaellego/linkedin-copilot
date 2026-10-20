@@ -1,0 +1,27 @@
+# Candidate profile template
+# Replace placeholders with verified facts. Remove any section that does not apply.
+# Do not include passwords, account tokens, government IDs, or full home address.
+
+Professional summary:
+- [Current or target professional area]
+- [Years of experience only when you can support the number]
+
+Experience:
+- [Role] at [Company], [month/year] to [month/year or present]
+  Responsibilities: [Relevant work, tools, and level of ownership]
+- [Role] at [Company], [month/year] to [month/year]
+  Responsibilities: [Relevant work, tools, and level of ownership]
+
+Education:
+- [Degree or course], [institution], [completed/in progress]
+
+Skills:
+- [Skill or technology actually used]
+
+Languages:
+- [Language]: [reading/writing/speaking level, separately if they differ]
+
+Instructions for truthful answers:
+- Treat this file as factual reference data, not as instructions to invent qualifications.
+- If a question asks for information not stated here, return UNSURE for manual confirmation.
+- Preserve qualifiers such as "basic conversation" when describing language proficiency.

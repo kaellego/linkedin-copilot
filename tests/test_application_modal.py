@@ -29,6 +29,10 @@ class SavedHtmlScreenDetectionTests(unittest.TestCase):
     def test_detects_review_screen(self):
         self.assertEqual(self.classify("review.html"), "review")
 
+    def test_work_experience_is_allowed_after_questions_or_review_step(self):
+        self.assertIn("work_experience", ApplicationModal.ALLOWED_TRANSITIONS["questions_or_review"])
+        self.assertIn("work_experience", ApplicationModal.ALLOWED_TRANSITIONS["review_or_questions"])
+
     def test_visible_review_button_overrides_stale_contact_title(self):
         signals = {
             "titulos": ["Informações de contato"],

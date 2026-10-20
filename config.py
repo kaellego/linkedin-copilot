@@ -36,6 +36,13 @@ AI_MODEL = os.getenv("AI_MODEL", "/zip/Qwen3.5-2B-Q8_0.gguf").strip()
 AI_ALLOW_REMOTE = os.getenv("AI_ALLOW_REMOTE", "false").strip().lower() in {"1", "true", "yes", "sim"}
 AI_TIMEOUT_SECONDS = float(os.getenv("AI_TIMEOUT_SECONDS", "15"))
 AI_REVIEW_PAUSE_SECONDS = max(0.0, float(os.getenv("AI_REVIEW_PAUSE_SECONDS", "2")))
+AI_RESPONSE_LANGUAGE = os.getenv("AI_RESPONSE_LANGUAGE", "Portuguese").strip() or "Portuguese"
+_AI_EXCLUDED_ROLE_TERMS_ENV = tuple(
+    term.strip()
+    for term in os.getenv("AI_EXCLUDED_ROLE_TERMS", "").split(",")
+    if term.strip()
+)
+AI_EXCLUDED_ROLE_TERMS = _AI_EXCLUDED_ROLE_TERMS_ENV or None
 
 PALAVRAS_CHAVE = os.getenv("PALAVRAS_CHAVE", "Analista de infraestrutura")
 LOCALIZACAO = os.getenv("LOCALIZACAO", "Brasil")

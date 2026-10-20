@@ -67,6 +67,24 @@ class AnswerSafetyTests(unittest.TestCase):
         self.modal.ai_service.answer_question.assert_called_once()
         self.assertTrue(any("Resposta livre sugerida" in str(call) for call in self.modal.status_queue.put.call_args_list))
 
+    def test_english_level_uses_explicit_profile_fact_when_ai_abstains(self):
+        self.modal.answers = {}
+        self.modal.ai_service = Mock()
+        self.modal.ai_service.answer_question.return_value = "UNSURE"
+        self.modal.status_queue = Mock()
+        profile = "Idiomas conforme curriculo: ingles avancado, conversacao basica."
+        with patch.object(config, "AI_ENABLED", True), patch.object(config, "AI_PROFILE_CONTEXT", profile):
+            answer = self.modal._ask_ai("Como você avalia o seu nível de inglês?", [])
+
+        self.assertEqual(answer, "avançado, com conversação básica.")
+        self.assertTrue(any("diretamente do perfil" in str(call) for call in self.modal.status_queue.put.call_args_list))
+
+    def test_english_level_fallback_does_not_infer_when_profile_lacks_level(self):
+        answer = self.modal._explicit_english_level_answer(
+            "Como você avalia o seu nível de inglês?", "Idiomas: inglês.", []
+        )
+        self.assertEqual(answer, "")
+
     def test_ai_free_text_validation_rejects_unsafe_or_unbounded_answers(self):
         self.assertEqual(self.modal._validate_ai_free_text("Tenho experiencia em suporte."), "Tenho experiencia em suporte.")
         self.assertEqual(self.modal._validate_ai_free_text("UNSURE"), "")
@@ -104,7 +122,7 @@ class AnswerSafetyTests(unittest.TestCase):
         self.assertEqual(answer, "Aproximadamente dez anos.")
         self.assertIn("Perfil: TI desde 2015", post.call_args.kwargs["json"]["messages"][0]["content"])
         self.assertIn("UNSURE", post.call_args.kwargs["json"]["messages"][1]["content"])
-        self.assertIn("apenas com algarismos", post.call_args.kwargs["json"]["messages"][1]["content"])
+        self.assertIn("Return digits only", post.call_args.kwargs["json"]["messages"][1]["content"])
 
     def test_ai_context_includes_sanitized_candidate_profile(self):
         self.modal.answers = {}
@@ -319,6 +337,52 @@ class AnswerSafetyTests(unittest.TestCase):
 
 
 class JobRelevanceTests(unittest.TestCase):
+    @patch("services.ai_service.requests.post")
+    def test_commercial_erp_account_role_is_rejected_without_ai_approval(self, post):
+        with patch.object(config, "AI_ENABLED", True):
+            service = AIService()
+            self.assertIs(service.assess_job_relevance("EXECUTIVO DE CONTAS ERP | GOIÂNIA", "Analista de infraestrutura"), False)
+        post.assert_not_called()
+
+    @patch("services.ai_service.requests.post")
+    def test_auxiliar_de_dp_is_rejected_for_it_target_without_ai_approval(self, post):
+        with patch.object(config, "AI_ENABLED", True):
+            service = AIService()
+            self.assertIs(service.assess_job_relevance("Auxiliar de DP", "Tecnologia da Informação"), False)
+        post.assert_not_called()
+
+    def test_hr_jobs_can_be_relevant_when_hr_is_the_configured_target(self):
+        self.assertFalse(AIService._is_unrelated_hr_role("Auxiliar de DP", "Auxiliar de Departamento Pessoal"))
+
+    def test_service_accepts_another_users_target_exclusions_and_language(self):
+        service = AIService(
+            enabled=True,
+            base_url="http://127.0.0.1:8080/v1",
+            model="other-model",
+            profile_context="Other candidate facts",
+            response_language="English",
+            excluded_role_terms=["piloto de aeronaves"],
+        )
+        self.assertIs(service.assess_job_relevance("Piloto de aeronaves", "Software developer"), False)
+        prompt, _ = service._question_prompt("What is your experience?", None, "text")
+        self.assertIn("Answer in English", prompt)
+
+    def test_empty_exclusion_selection_disables_default_role_filters(self):
+        service = AIService(enabled=True, excluded_role_terms=[])
+        self.assertFalse(service._has_unrelated_role_marker("Auxiliar de DP", "Analista de infraestrutura"))
+
+    @patch("services.ai_service.requests.post")
+    def test_relevance_prompt_requires_technical_function_not_product_mention(self, post):
+        response = Mock()
+        response.json.return_value = {"choices": [{"message": {"content": "SIM"}}]}
+        post.return_value = response
+        with patch.object(config, "AI_ENABLED", True):
+            service = AIService()
+            service.assess_job_relevance("Analista de Infraestrutura", "Analista de infraestrutura")
+        prompt = post.call_args.kwargs["json"]["messages"][1]["content"]
+        self.assertIn("Shared products, tools", prompt)
+        self.assertIn("Target role and keywords", prompt)
+
     @patch("services.ai_service.requests.post")
     def test_ai_classifies_matching_job_title(self, post):
         response = Mock()

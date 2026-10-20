@@ -94,6 +94,15 @@ class ApplicationModal(BasePage):
     o fluxo de 4 etapas: Contato -> Currículo -> Perguntas -> Revisão -> Envio.
     """
     
+    ALLOWED_TRANSITIONS = {
+        "contact": {"resume", "optional", "questions", "work_experience", "review"},
+        "resume_or_optional": {"resume", "optional", "questions", "work_experience", "review"},
+        "optional_or_questions": {"optional", "questions", "work_experience", "review"},
+        "review_or_questions": {"review", "questions", "work_experience"},
+        "questions_or_review": {"questions", "review", "work_experience"},
+        "next_step": {"resume", "optional", "questions", "work_experience", "review"},
+    }
+
     # --- Locators ---
     MODAL_HEADER_TITLE = (By.CSS_SELECTOR, "div[data-test-modal][role='dialog'] .ph5 h3")
     MODAL_FALLBACK_TITLE = (By.CSS_SELECTOR, "div[data-test-modal][role='dialog'] .ph5 h4")
@@ -258,6 +267,13 @@ class ApplicationModal(BasePage):
             answer = str(self.ai_service.answer_question(
                 question, options, profile_context=profile_context, field_type=field_type
             ) or "").strip()
+            if answer.upper() == "UNSURE":
+                profile_answer = self._explicit_english_level_answer(question, profile_context, options)
+                if profile_answer:
+                    self.status_queue.put(
+                        "Nível de inglês obtido diretamente do perfil; mantendo a ressalva sobre conversação."
+                    )
+                    return profile_answer
             if answer and answer.upper() != "UNSURE":
                 if options:
                     self.status_queue.put("Resposta sugerida pela IA; validando opcao disponivel.")
@@ -271,6 +287,38 @@ class ApplicationModal(BasePage):
         except Exception:
             self.status_queue.put("AVISO: IA indisponivel; sera necessaria resposta manual.")
             return ""
+
+    def _explicit_english_level_answer(self, question: str, profile_context: str, options: list) -> str:
+        """Use an explicit English proficiency fact if the model abstains."""
+        question_key = self._screen_key(question)
+        if not any(term in question_key for term in ("ingles", "english")):
+            return ""
+        if not any(term in question_key for term in ("nivel", "level", "avalia", "avaliar")):
+            return ""
+
+        context_key = self._screen_key(profile_context)
+        match = re.search(
+            r"ingles\s+(basico|intermediario|medio|avancado|fluente),?\s+conversacao\s+(basica|intermediaria|media|avancada|fluente)",
+            context_key,
+        )
+        if not match:
+            return ""
+
+        level, conversation = match.groups()
+        if options:
+            for candidate in (level, f"ingles {level}", f"{level} (conversacao {conversation})"):
+                matched = self._match_option(candidate, options)
+                if matched:
+                    return matched
+            return ""
+
+        labels = {
+            "basico": "básico", "basica": "básica",
+            "intermediario": "intermediário", "intermediaria": "intermediária",
+            "medio": "médio", "media": "média",
+            "avancado": "avançado", "avancada": "avançada", "fluente": "fluente",
+        }
+        return f"{labels[level]}, com conversação {labels[conversation]}."
 
     def _match_option(self, answer: str, options: list) -> str:
         normalized_answer = self._screen_key(answer.strip()).strip(" \t\r\n[](){}\"'`.,:;")
@@ -932,14 +980,6 @@ class ApplicationModal(BasePage):
             "work_experience": self._handle_work_experience_step,
             "review": self._handle_review_step,
         }
-        allowed_transitions = {
-            "contact": {"resume", "optional", "questions", "work_experience", "review"},
-            "resume_or_optional": {"resume", "optional", "questions", "work_experience", "review"},
-            "optional_or_questions": {"optional", "questions", "review"},
-            "review_or_questions": {"review", "questions"},
-            "questions_or_review": {"questions", "review"},
-            "next_step": {"resume", "optional", "questions", "work_experience", "review"},
-        }
         expected_transition = "início"
         for step in range(1, 11):
             self._check_control_signals()
@@ -960,7 +1000,7 @@ class ApplicationModal(BasePage):
 
             if expected_transition != "início":
                 self.status_queue.put(f"Transição esperada: {expected_transition}; detectada: {state}.")
-                allowed_states = allowed_transitions.get(expected_transition)
+                allowed_states = self.ALLOWED_TRANSITIONS.get(expected_transition)
                 if allowed_states and state not in allowed_states:
                     self.status_queue.put("ERRO: Transição inesperada; candidatura interrompida para análise.")
                     self._save_debug_html(step, current_title, f"transição inesperada de {expected_transition} para {state}", signals)

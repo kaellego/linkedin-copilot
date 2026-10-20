@@ -24,7 +24,7 @@ logging.basicConfig(
     encoding='utf-8',
 )
 
-def bot_thread_worker(status_queue, answer_queue, pause_event, stop_event, application_mode, keywords, location, work_type):
+def bot_thread_worker(status_queue, answer_queue, pause_event, stop_event, application_mode, keywords, location, work_type, excluded_role_terms):
     """Função alvo da thread do robô."""
     driver = None
     try:
@@ -32,6 +32,7 @@ def bot_thread_worker(status_queue, answer_queue, pause_event, stop_event, appli
         config.PALAVRAS_CHAVE = keywords
         config.LOCALIZACAO = location
         config.TIPO_VAGA = work_type
+        config.AI_EXCLUDED_ROLE_TERMS = tuple(excluded_role_terms)
 
         driver = create_driver()
         bot = LinkedinBot(driver, status_queue, answer_queue, pause_event, stop_event, application_mode)
@@ -63,6 +64,15 @@ class ControlPanelApp(tk.Tk):
         self.work_type_var = tk.StringVar(value="Todas")
         self.keywords_var = tk.StringVar(value=config.PALAVRAS_CHAVE)
         self.location_var = tk.StringVar(value=config.LOCALIZACAO)
+        from services.ai_service import DEFAULT_EXCLUDED_ROLE_TERMS
+        self.excluded_role_terms = tuple(
+            config.AI_EXCLUDED_ROLE_TERMS
+            if config.AI_EXCLUDED_ROLE_TERMS is not None
+            else DEFAULT_EXCLUDED_ROLE_TERMS
+        )
+        self.excluded_terms_summary_var = tk.StringVar(
+            value=f"{len(self.excluded_role_terms)} selecionados"
+        )
 
         self._create_widgets()
         self.check_queue()
@@ -83,8 +93,20 @@ class ControlPanelApp(tk.Tk):
         self.entry_location = tk.Entry(settings_frame, textvariable=self.location_var, width=50)
         self.entry_location.grid(row=1, column=1, sticky='w', pady=2, padx=5)
 
+        # Termos de cargos que a relevancia deve rejeitar
+        tk.Label(settings_frame, text="Cargos a excluir:").grid(row=2, column=0, sticky='w', pady=2)
+        self.excluded_terms_button = tk.Button(
+            settings_frame,
+            text="Selecionar termos...",
+            command=self._select_excluded_role_terms,
+        )
+        self.excluded_terms_button.grid(row=2, column=1, sticky='w', pady=2, padx=5)
+        tk.Label(settings_frame, textvariable=self.excluded_terms_summary_var).grid(
+            row=2, column=1, sticky='w', padx=(125, 5)
+        )
+
         # Modalidade de trabalho
-        tk.Label(settings_frame, text="Modalidade da vaga:").grid(row=2, column=0, sticky='w', pady=2)
+        tk.Label(settings_frame, text="Modalidade da vaga:").grid(row=3, column=0, sticky='w', pady=2)
         self.work_type_combo = ttk.Combobox(
             settings_frame,
             textvariable=self.work_type_var,
@@ -92,10 +114,10 @@ class ControlPanelApp(tk.Tk):
             state="readonly",
             width=47,
         )
-        self.work_type_combo.grid(row=2, column=1, sticky='w', pady=2, padx=5)
+        self.work_type_combo.grid(row=3, column=1, sticky='w', pady=2, padx=5)
 
         # Tipo de candidatura
-        tk.Label(settings_frame, text="Tipo de candidatura:").grid(row=3, column=0, sticky='w', pady=2)
+        tk.Label(settings_frame, text="Tipo de candidatura:").grid(row=4, column=0, sticky='w', pady=2)
         self.application_mode_combo = ttk.Combobox(
             settings_frame,
             textvariable=self.application_mode_var,
@@ -103,7 +125,7 @@ class ControlPanelApp(tk.Tk):
             state="readonly",
             width=47,
         )
-        self.application_mode_combo.grid(row=3, column=1, sticky='w', pady=2, padx=5)
+        self.application_mode_combo.grid(row=4, column=1, sticky='w', pady=2, padx=5)
 
         # Frame de Controles
         control_frame = tk.Frame(self)
@@ -122,6 +144,47 @@ class ControlPanelApp(tk.Tk):
         # Terminal Visual (Log)
         self.log_text = scrolledtext.ScrolledText(self, wrap=tk.WORD, state=tk.DISABLED, bg="black", fg="#00FF00", font=("Consolas", 9))
         self.log_text.pack(pady=10, padx=10, expand=True, fill=tk.BOTH)
+
+    def _select_excluded_role_terms(self):
+        from services.ai_service import DEFAULT_EXCLUDED_ROLE_TERMS
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Selecionar cargos a excluir")
+        dialog.geometry("520x480")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        tk.Label(
+            dialog,
+            text="Selecione títulos que devem ser ignorados na avaliação de relevância.",
+            wraplength=490,
+        ).pack(padx=12, pady=(12, 6), anchor="w")
+        list_frame = tk.Frame(dialog)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=6)
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        listbox = tk.Listbox(list_frame, selectmode=tk.MULTIPLE, yscrollcommand=scrollbar.set, exportselection=False)
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=listbox.yview)
+
+        terms = list(dict.fromkeys((*DEFAULT_EXCLUDED_ROLE_TERMS, *self.excluded_role_terms)))
+        selected = set(self.excluded_role_terms)
+        for index, term in enumerate(terms):
+            listbox.insert(tk.END, term)
+            if term in selected:
+                listbox.selection_set(index)
+
+        actions = tk.Frame(dialog)
+        actions.pack(fill=tk.X, padx=12, pady=(0, 12))
+        tk.Button(actions, text="Selecionar todos", command=lambda: listbox.selection_set(0, tk.END)).pack(side=tk.LEFT)
+        tk.Button(actions, text="Limpar", command=lambda: listbox.selection_clear(0, tk.END)).pack(side=tk.LEFT, padx=6)
+
+        def apply_selection():
+            self.excluded_role_terms = tuple(terms[index] for index in listbox.curselection())
+            self.excluded_terms_summary_var.set(f"{len(self.excluded_role_terms)} selecionados")
+            dialog.destroy()
+
+        tk.Button(actions, text="Aplicar", command=apply_selection).pack(side=tk.RIGHT)
 
     def check_and_start_chrome_debug(self) -> bool:
         self.update_log_visual("Verificando porta de depuração do Chrome (9222)...")
@@ -171,6 +234,7 @@ class ControlPanelApp(tk.Tk):
         self.work_type_combo.config(state=tk.DISABLED)
         self.entry_keywords.config(state=tk.DISABLED)
         self.entry_location.config(state=tk.DISABLED)
+        self.excluded_terms_button.config(state=tk.DISABLED)
         
         logging.info("Iniciando processo do Bot.")
         logging.info("Filtros de busca configurados; valores omitidos do log.")
@@ -193,10 +257,11 @@ class ControlPanelApp(tk.Tk):
         keywords = self.keywords_var.get()
         location = self.location_var.get()
         work_type = self.work_type_var.get()
+        excluded_role_terms = self.excluded_role_terms
 
         self.bot_thread = threading.Thread(
             target=bot_thread_worker,
-            args=(self.status_queue, self.answer_queue, self.pause_event, self.stop_event, application_mode, keywords, location, work_type),
+            args=(self.status_queue, self.answer_queue, self.pause_event, self.stop_event, application_mode, keywords, location, work_type, excluded_role_terms),
             daemon=True
         )
         self.bot_thread.start()
@@ -284,6 +349,7 @@ class ControlPanelApp(tk.Tk):
         self.work_type_combo.config(state="readonly")
         self.entry_keywords.config(state=tk.NORMAL)
         self.entry_location.config(state=tk.NORMAL)
+        self.excluded_terms_button.config(state=tk.NORMAL)
         self.pause_button.config(state=tk.DISABLED)
         self.resume_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.DISABLED)

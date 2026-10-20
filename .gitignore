@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+candidate_profile.txt
 env
 
 # Runtime data, session state, logs, and debug artifacts
