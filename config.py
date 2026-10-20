@@ -31,8 +31,10 @@ CAMINHO_CURRICULO = os.getenv("CAMINHO_CURRICULO", "").strip()
 AI_ENABLED = os.getenv("AI_ENABLED", "false").strip().lower() in {"1", "true", "yes", "sim"}
 AI_PROFILE_CONTEXT = os.getenv("AI_PROFILE_CONTEXT", "").strip()
 AI_BASE_URL = os.getenv("AI_BASE_URL", "http://127.0.0.1:8080/v1").rstrip("/")
+AI_MODEL = os.getenv("AI_MODEL", "/zip/Qwen3.5-2B-Q8_0.gguf").strip()
 AI_ALLOW_REMOTE = os.getenv("AI_ALLOW_REMOTE", "false").strip().lower() in {"1", "true", "yes", "sim"}
 AI_TIMEOUT_SECONDS = float(os.getenv("AI_TIMEOUT_SECONDS", "15"))
+AI_REVIEW_PAUSE_SECONDS = max(0.0, float(os.getenv("AI_REVIEW_PAUSE_SECONDS", "2")))
 
 PALAVRAS_CHAVE = os.getenv("PALAVRAS_CHAVE", "Analista de infraestrutura")
 LOCALIZACAO = os.getenv("LOCALIZACAO", "Brasil")

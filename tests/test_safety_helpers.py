@@ -1,9 +1,9 @@
 import json
+import threading
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from selenium.common.exceptions import ElementClickInterceptedException
 
 import config
@@ -16,12 +16,47 @@ class AnswerSafetyTests(unittest.TestCase):
     def setUp(self):
         self.modal = ApplicationModal.__new__(ApplicationModal)
 
+    def test_duplicate_question_labels_match_saved_answer(self):
+        saved = "Voc\u00ea mora em Goi\u00e2nia/Aparecida de Goi\u00e2nia?\nVoc\u00ea mora em Goi\u00e2nia/Aparecida de Goi\u00e2nia?"
+        current = "Mora em Goi\u00e2nia/Aparecida de Goi\u00e2nia?\nMora em Goi\u00e2nia/Aparecida de Goi\u00e2nia?"
+        self.modal.answers = {saved: "Sim"}
+
+        self.assertEqual(self.modal._clean_question_text(current), "Mora em Goi\u00e2nia/Aparecida de Goi\u00e2nia?")
+        self.assertEqual(self.modal._cached_answer_for_question(current), "Sim")
+
+    def test_ai_receives_local_verified_answer_context(self):
+        self.modal.answers = {"Aceita trabalho presencial?": "Sim"}
+        self.modal.ai_service = Mock()
+        self.modal.ai_service.answer_question.return_value = "Sim"
+        self.modal.status_queue = Mock()
+        with (
+            patch.object(config, "AI_ENABLED", True),
+            patch.object(config, "AI_PROFILE_CONTEXT", ""),
+            patch.object(config, "AI_BASE_URL", "http://127.0.0.1:8080/v1"),
+        ):
+            self.assertEqual(self.modal._ask_ai("Aceita presencial?", ["Sim", "N\u00e3o"]), "Sim")
+
+        context = self.modal.ai_service.answer_question.call_args.kwargs["profile_context"]
+        self.assertIn("Verified answer: Sim", context)
+
+    def test_ai_review_pause_is_interruptible(self):
+        self.modal.status_queue = Mock()
+        self.modal.stop_event = Mock()
+        self.modal.stop_event.is_set.return_value = False
+        self.modal.stop_event.wait.return_value = False
+        self.modal.pause_event = threading.Event()
+        self.modal.pause_event.set()
+        with patch.object(config, "AI_REVIEW_PAUSE_SECONDS", 2):
+            self.modal._pause_after_ai_answer()
+        self.modal.stop_event.wait.assert_called_once_with(timeout=2)
+
     def test_option_match_requires_full_option(self):
         self.assertEqual(self.modal._match_option("sim", ["Sim", "Não"]), "Sim")
         self.assertEqual(self.modal._match_option("sim, tenho experiência", ["Sim", "Não"]), "")
 
     def test_option_match_ignores_accents_and_case(self):
         self.assertEqual(self.modal._match_option("presencial", ["Presencial"]), "Presencial")
+        self.assertEqual(self.modal._match_option("[Sim]", ["Sim", "Não"]), "Sim")
 
     def test_free_text_cache_is_never_automatic(self):
         self.assertFalse(self.modal._is_valid_cached_answer("Conte sua experiência", "Tenho experiência", []))

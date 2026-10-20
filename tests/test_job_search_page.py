@@ -1,6 +1,7 @@
 import unittest
 import threading
 from queue import Queue
+from unittest.mock import Mock
 
 from pages.job_search_page import JobSearchPage
 
@@ -25,12 +26,32 @@ class _Element:
 
 
 class ExternalJobDetailsTests(unittest.TestCase):
+    def test_clicks_yes_when_offsite_confirmation_is_available(self):
+        page = JobSearchPage.__new__(JobSearchPage)
+        button = object()
+        page.status_queue = Mock()
+        page._find_clickable_element = Mock(return_value=button)
+        page._click_external_apply_button = Mock()
+
+        self.assertTrue(page._confirm_offsite_application())
+        page._find_clickable_element.assert_called_once_with(page.OFFSITE_APPLY_CONFIRMATION_YES, 12)
+        page._click_external_apply_button.assert_called_once_with(button)
+
+    def test_reports_when_offsite_confirmation_does_not_appear(self):
+        page = JobSearchPage.__new__(JobSearchPage)
+        page.status_queue = Mock()
+        page._find_clickable_element = Mock(return_value=None)
+        page._click_external_apply_button = Mock()
+
+        self.assertFalse(page._confirm_offsite_application())
+        page._click_external_apply_button.assert_not_called()
+
     def test_wait_accepts_nested_title_label_on_details_panel(self):
-        title = _Element("Analista de Suporte Técnico Pleno")
+        title = _Element("Candidatar-se à vaga de Assistente TI - Goiânia GO no site da empresa")
 
         class Job:
             def find_element(self, by, selector):
-                return title
+                return _Element("Assistente  TI - Goiânia GO with verification")
 
         panel = _Element()
         panel.find_elements = lambda by, selector: (

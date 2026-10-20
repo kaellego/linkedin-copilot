@@ -136,15 +136,14 @@ class JobSearchPage(BasePage):
         self.status_queue.put("Aba externa fechada. Retomando automaticamente...")
 
     def _confirm_offsite_application(self):
-        """Confirma a candidatura externa quando o LinkedIn exibe o banner."""
-        try:
-            confirm_button = WebDriverWait(self.driver, 5).until(
-                EC.element_to_be_clickable(self.OFFSITE_APPLY_CONFIRMATION_YES)
-            )
-            confirm_button.click()
-            self.status_queue.put("Confirmação de candidatura externa encontrada. Botão 'Sim' clicado.")
-        except TimeoutException:
-            pass
+        """Clica em ?Sim? quando o LinkedIn pergunta se a candidatura externa foi conclu?da."""
+        confirm_button = self._find_clickable_element(self.OFFSITE_APPLY_CONFIRMATION_YES, 12)
+        if confirm_button is None:
+            self.status_queue.put("AVISO: Banner 'Voc? se candidatou?' n?o apareceu; n?o foi poss?vel confirmar com 'Sim'.")
+            return False
+        self._click_external_apply_button(confirm_button)
+        self.status_queue.put("Confirma??o de candidatura externa: bot?o 'Sim' clicado.")
+        return True
 
     def _find_clickable_element(self, locator, timeout: int):
         """Encontra um botão visível sem avaliar um elemento nulo durante atualizações do DOM."""
@@ -203,6 +202,7 @@ class JobSearchPage(BasePage):
             title_link = job.find_element(*self.JOB_TITLE_LINK)
             expected_title = (title_link.get_attribute("aria-label") or title_link.text or "").strip().lower()
             expected_title = expected_title.split(" with verification")[0].strip()
+            expected_title = " ".join(expected_title.split())
         except (NoSuchElementException, StaleElementReferenceException):
             expected_title = ""
 

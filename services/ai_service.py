@@ -7,11 +7,12 @@ class AIService:
         self.llama_url = config.AI_BASE_URL
         self.profile_context = config.AI_PROFILE_CONTEXT
 
-    def answer_question(self, question: str, options: list = None) -> str:
+    def answer_question(self, question: str, options: list = None, profile_context: str = None) -> str:
         """
         Recebe a pergunta e opções (se for select/radio) e retorna a resposta exata.
         """
-        if not config.AI_ENABLED or not self.profile_context or not options:
+        profile_context = profile_context or self.profile_context
+        if not config.AI_ENABLED or not profile_context or not options:
             return "UNSURE"
         try:
             endpoint = urlsplit(self.llama_url)
@@ -23,17 +24,17 @@ class AIService:
         except ValueError:
             return "UNSURE"
         prompt = (
-            "Responda apenas com uma opção literal da lista. Use somente fatos do perfil fornecido. "
-            "Se o perfil não permitir determinar uma resposta verdadeira, responda exatamente UNSURE.\n"
-            f"Pergunta: {question}\nOpções: {options}"
+            "Responda com o texto exato de uma opcao da lista, sem colchetes ou explicacoes. "
+            "Use somente fatos do perfil fornecido. Se nao houver informacao suficiente, responda UNSURE.\n"
+            f"Pergunta: {question}\nOpcoes: {options}"
         )
         try:
             response = requests.post(
                 f"{self.llama_url}/chat/completions",
                 json={
-                    "model": "llama3",
+                    "model": config.AI_MODEL,
                     "messages": [
-                        {"role": "system", "content": self.profile_context},
+                        {"role": "system", "content": profile_context},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0,
@@ -43,6 +44,6 @@ class AIService:
             )
             response.raise_for_status()
             answer = response.json()["choices"][0]["message"]["content"].strip()
-            return "" if answer.upper() == "UNSURE" else answer
+            return "UNSURE" if answer.upper() == "UNSURE" else answer
         except (requests.RequestException, KeyError, IndexError, TypeError, ValueError):
             return ""
