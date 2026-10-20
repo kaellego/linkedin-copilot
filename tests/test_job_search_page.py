@@ -2,6 +2,7 @@ import unittest
 import threading
 from queue import Queue
 from unittest.mock import Mock
+from selenium.common.exceptions import StaleElementReferenceException
 
 from pages.job_search_page import JobSearchPage
 
@@ -26,6 +27,30 @@ class _Element:
 
 
 class ExternalJobDetailsTests(unittest.TestCase):
+    def test_refreshes_job_card_by_stable_job_id(self):
+        page = JobSearchPage.__new__(JobSearchPage)
+        stale_card = Mock()
+        stale_card.get_attribute.return_value = "old"
+        current_card = Mock()
+        current_card.get_attribute.return_value = "4477723228"
+        page.driver = Mock()
+        page.driver.find_elements.return_value = [stale_card, current_card]
+
+        self.assertIs(page._refresh_job_card("4477723228", 0), current_card)
+
+    def test_card_click_reacquires_after_stale_reference(self):
+        page = JobSearchPage.__new__(JobSearchPage)
+        old_card, current_card, clickable = Mock(), Mock(), Mock()
+        old_card.get_attribute.side_effect = StaleElementReferenceException("redraw")
+        current_card.get_attribute.return_value = "4477723228"
+        current_card.find_element.return_value = clickable
+        page.driver = Mock()
+        page.driver.find_elements.return_value = [old_card, current_card]
+
+        page._click_job_card("4477723228", 0)
+
+        clickable.click.assert_called_once_with()
+
     def test_clicks_yes_when_offsite_confirmation_is_available(self):
         page = JobSearchPage.__new__(JobSearchPage)
         button = object()

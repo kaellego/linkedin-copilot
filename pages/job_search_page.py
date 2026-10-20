@@ -65,6 +65,36 @@ class JobSearchPage(BasePage):
         except (NoSuchElementException, StaleElementReferenceException):
             return ""
 
+    def _refresh_job_card(self, job_id: str, index: int):
+        """Reacquire a card after slow work (such as an AI request) redraws results."""
+        cards = self.driver.find_elements(*self.JOB_LIST_ITEM)
+        if job_id:
+            for card in cards:
+                try:
+                    if card.get_attribute("data-occludable-job-id") == job_id:
+                        return card
+                except StaleElementReferenceException:
+                    continue
+        return cards[index] if index < len(cards) else None
+
+    def _click_job_card(self, job_id: str, index: int):
+        """Click a freshly located card, retrying if LinkedIn redraws during the click."""
+        last_error = None
+        for _ in range(3):
+            card = self._refresh_job_card(job_id, index)
+            if card is None:
+                break
+            try:
+                try:
+                    target = card.find_element(By.CSS_SELECTOR, "div.job-card-container")
+                except NoSuchElementException:
+                    target = card
+                target.click()
+                return
+            except StaleElementReferenceException as error:
+                last_error = error
+        raise StaleElementReferenceException(f"Job card kept changing before click: {last_error}")
+
     def _is_job_relevant(self, job) -> bool:
         title = self._job_title(job)
         if not title:
@@ -403,21 +433,26 @@ class JobSearchPage(BasePage):
                 location_element = job.find_element(*self.JOB_LOCATION_TEXT)
                 location_text = location_element.text.lower()
                 if self.location_keywords and not any(keyword in location_text for keyword in self.location_keywords):
-                    self.status_queue.put(f"Pulando vaga. Localização '{location_element.text}' não corresponde ao filtro.")
+                    self.status_queue.put(f"Pulando vaga. Localização '{location_text}' não corresponde ao filtro.")
                     continue
                 if not self._matches_work_type(location_text):
-                    self.status_queue.put(f"Pulando vaga. Modalidade '{location_element.text}' não corresponde ao filtro '{self.work_type}'.")
+                    self.status_queue.put(f"Pulando vaga. Modalidade '{location_text}' não corresponde ao filtro '{self.work_type}'.")
                     continue
                 
                 if not self._is_job_relevant(job):
                     continue
+                job = self._refresh_job_card(job_id, i)
+                if job is None:
+                    self.status_queue.put("O cartão da vaga mudou durante a análise; pulando este item.")
+                    continue
+                location_text = job.find_element(*self.JOB_LOCATION_TEXT).text
 
-                self.status_queue.put(f"Localização OK: '{location_element.text}'. Processando candidatura...")
+                self.status_queue.put(f"Localização OK: '{location_text}'. Processando candidatura...")
 
                 modal_is_open = False
                 try:
                     self._check_control_signals()
-                    job.click()
+                    self._click_job_card(job_id, i)
                     self._check_control_signals()
                     self.wait.until(EC.element_to_be_clickable(self.APPLY_BUTTON)).click()
                     modal_is_open = True
@@ -513,16 +548,21 @@ class JobSearchPage(BasePage):
                 location_element = job.find_element(*self.JOB_LOCATION_TEXT)
                 location_text = location_element.text.lower()
                 if self.location_keywords and not any(keyword in location_text for keyword in self.location_keywords):
-                    self.status_queue.put(f"Pulando vaga. Localização '{location_element.text}' não corresponde ao filtro.")
+                    self.status_queue.put(f"Pulando vaga. Localização '{location_text}' não corresponde ao filtro.")
                     continue
                 if not self._matches_work_type(location_text):
-                    self.status_queue.put(f"Pulando vaga. Modalidade '{location_element.text}' não corresponde ao filtro '{self.work_type}'.")
+                    self.status_queue.put(f"Pulando vaga. Modalidade '{location_text}' não corresponde ao filtro '{self.work_type}'.")
                     continue
                 
                 if not self._is_job_relevant(job):
                     continue
+                job = self._refresh_job_card(job_id, i)
+                if job is None:
+                    self.status_queue.put("O cartão da vaga mudou durante a análise; pulando este item.")
+                    continue
+                location_text = job.find_element(*self.JOB_LOCATION_TEXT).text
 
-                self.status_queue.put(f"Localização OK: '{location_element.text}'.")
+                self.status_queue.put(f"Localização OK: '{location_text}'.")
 
                 try:
                     job.find_element(*self.EASY_APPLY_TAG)
@@ -532,10 +572,7 @@ class JobSearchPage(BasePage):
                     try:
                         results_url = self.driver.current_url
                         self.status_queue.put("VAGA NORMAL: Clicando no cartão para abrir os detalhes da vaga...")
-                        try:
-                            job.find_element(By.CSS_SELECTOR, "div.job-card-container").click()
-                        except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
-                            self.driver.execute_script("arguments[0].click();", job)
+                        self._click_job_card(job_id, i)
                         details_panel = self._wait_for_job_details(job)
                         self._check_control_signals()
                         details_button = WebDriverWait(self.driver, 5, poll_frequency=0.2).until(

@@ -8,7 +8,7 @@ class AIService:
         self.llama_url = config.AI_BASE_URL
         self.profile_context = config.AI_PROFILE_CONTEXT
 
-    def answer_question(self, question: str, options: list = None, profile_context: str = None) -> str:
+    def answer_question(self, question: str, options: list = None, profile_context: str = None, field_type: str = "text") -> str:
         """
         Recebe a pergunta e opções (se for select/radio) e retorna a resposta exata.
         """
@@ -32,11 +32,17 @@ class AIService:
             )
             max_tokens = 80
         else:
+            numeric_rule = (
+                "O campo aceita somente um valor numerico; responda apenas com algarismos, "
+                "sem palavras, unidade ou explicacao.\n"
+                if field_type == "numeric" else ""
+            )
             prompt = (
                 "Responda a pergunta em portugues, em uma frase curta (ate 300 caracteres), "
                 "em primeira pessoa quando apropriado. Use somente fatos do perfil fornecido. "
                 "Pode estimar duracoes a partir de datas, identificando-as como aproximadas. "
                 "Nao invente fatos, nao inclua dados de contato e nao repita a pergunta. "
+                f"Tipo de campo: {field_type}.\n{numeric_rule}"
                 "Se nao houver base suficiente, responda exatamente UNSURE.\n"
                 f"Pergunta: {question}"
             )

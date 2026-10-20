@@ -94,6 +94,23 @@ class SavedHtmlScreenDetectionTests(unittest.TestCase):
     def test_keeps_unknown_screen_unknown(self):
         self.assertEqual(self.classify("unknown.html"), "unknown")
 
+    def test_contact_fields_identify_screen_when_title_is_mojibake(self):
+        signals = {
+            "titulos": ["Informa????es de contato"],
+            "botoes": ["Avançar"],
+            "campos": [{"type": "email", "name": "", "id": "", "label": "E-mail", "required": True}],
+            "tem_cartao_curriculo": False,
+            "tem_formulario": True,
+            "quantidade_grupos_pergunta": 1,
+        }
+        self.assertEqual(self.detector._classify_screen(signals["titulos"][0], signals), "contact")
+
+    def test_fallback_contact_title_is_ascii_and_recognizable(self):
+        self.assertEqual(self.detector._classify_screen("informacoes de contato", {
+            "titulos": [], "botoes": [], "campos": [], "tem_cartao_curriculo": False,
+            "tem_formulario": True, "quantidade_grupos_pergunta": 0,
+        }), "contact")
+
     def test_signals_include_required_fields_without_values(self):
         html = (FIXTURES / "contact.html").read_text(encoding="utf-8")
         signals = self.detector._signals_from_html(html)

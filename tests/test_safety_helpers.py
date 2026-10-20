@@ -25,6 +25,21 @@ class AnswerSafetyTests(unittest.TestCase):
         self.assertEqual(self.modal._clean_question_text(current), "Mora em Goi\u00e2nia/Aparecida de Goi\u00e2nia?")
         self.assertEqual(self.modal._cached_answer_for_question(current), "Sim")
 
+    def test_truth_declaration_question_is_recognized_even_when_repeated(self):
+        question = (
+            "Você declara que todas as respostas que deu são verdadeiras?"
+            "Você declara que todas as respostas que deu são verdadeiras?"
+        )
+        self.assertTrue(self.modal._is_truth_declaration_question(question))
+        self.assertFalse(self.modal._is_truth_declaration_question("Você tem experiência em TI?"))
+        self.assertEqual(self.modal._truth_declaration_answer(question, ["No", "Sim"]), "Sim")
+        self.assertEqual(self.modal._truth_declaration_answer(question, ["No", "Não"]), "")
+        self.assertIsNone(self.modal._truth_declaration_answer("Você tem experiência em TI?", ["Sim", "Não"]))
+
+    def test_truth_declaration_selects_affirmative_option(self):
+        self.assertEqual(self.modal._match_option("Sim", ["No", "Sim"]), "Sim")
+        self.assertEqual(self.modal._match_option("Yes", ["No", "Yes"]), "Yes")
+
     def test_ai_receives_local_verified_answer_context(self):
         self.modal.answers = {"Aceita trabalho presencial?": "Sim"}
         self.modal.ai_service = Mock()
@@ -57,6 +72,19 @@ class AnswerSafetyTests(unittest.TestCase):
         self.assertEqual(self.modal._validate_ai_free_text("UNSURE"), "")
         self.assertEqual(self.modal._validate_ai_free_text("Meu email e nome@example.com"), "")
         self.assertEqual(self.modal._validate_ai_free_text("x" * 301), "")
+        self.assertEqual(self.modal._validate_ai_free_text("11", "numeric"), "11")
+        self.assertEqual(self.modal._validate_ai_free_text("11 anos", "numeric"), "")
+
+    def test_numeric_field_is_detected_from_linkedin_id(self):
+        field = Mock()
+        field.get_attribute.side_effect = lambda name: {
+            "id": "single-line-text-form-component-formElement-example-numeric",
+            "name": "", "aria-label": "", "type": "text", "inputmode": "text",
+        }.get(name)
+        group = Mock()
+        group.find_elements.return_value = [field]
+
+        self.assertEqual(self.modal._get_question_field_type(group), "numeric")
 
     def test_ai_service_requests_free_text_answer_with_profile_context(self):
         service = AIService()
@@ -71,11 +99,12 @@ class AnswerSafetyTests(unittest.TestCase):
             patch("services.ai_service.requests.post", return_value=response) as post,
         ):
             service.llama_url = "http://127.0.0.1:8080/v1"
-            answer = service.answer_question("Quantos anos de experiencia?", [], "Perfil: TI desde 2015")
+            answer = service.answer_question("Quantos anos de experiencia?", [], "Perfil: TI desde 2015", field_type="numeric")
 
         self.assertEqual(answer, "Aproximadamente dez anos.")
         self.assertIn("Perfil: TI desde 2015", post.call_args.kwargs["json"]["messages"][0]["content"])
         self.assertIn("UNSURE", post.call_args.kwargs["json"]["messages"][1]["content"])
+        self.assertIn("apenas com algarismos", post.call_args.kwargs["json"]["messages"][1]["content"])
 
     def test_ai_context_includes_sanitized_candidate_profile(self):
         self.modal.answers = {}
@@ -189,6 +218,42 @@ class AnswerSafetyTests(unittest.TestCase):
 
         self.modal.driver = Driver(Scope(Field()))
         self.assertEqual(self.modal._validate_current_form(), [])
+
+    def test_form_validation_retries_after_dom_rerender(self):
+        self.modal._validate_current_form_once = Mock(
+            side_effect=[StaleElementReferenceException("rerender"), []]
+        )
+
+        self.assertEqual(self.modal._validate_current_form(), [])
+        self.assertEqual(self.modal._validate_current_form_once.call_count, 2)
+
+    def test_next_button_is_reacquired_after_stale_click(self):
+        stale_element = Mock()
+        stale_element.click.side_effect = StaleElementReferenceException("modal rerender")
+        fresh_element = Mock()
+        self.modal.driver = Mock()
+        self.modal.status_queue = Mock()
+        self.modal.stop_event = threading.Event()
+        self.modal.pause_event = threading.Event()
+        self.modal.pause_event.set()
+        self.modal._transition_signature = Mock(return_value=("contact",))
+        self.modal._wait_for_screen_transition = Mock()
+
+        class ImmediateWait:
+            calls = 0
+
+            def __init__(self, driver, timeout, **kwargs):
+                pass
+
+            def until(self, condition):
+                self.__class__.calls += 1
+                return stale_element if self.calls == 1 else fresh_element
+
+        with patch("pages.application_modal.WebDriverWait", ImmediateWait):
+            self.modal._click_next_button()
+
+        stale_element.click.assert_called_once_with()
+        fresh_element.click.assert_called_once_with()
 
     def test_placeholder_select_is_not_a_valid_required_answer(self):
         self.assertTrue(self.modal._is_placeholder_option("Selecione uma opção"))
