@@ -3,7 +3,7 @@ from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, WebDriverException
 from typing import Tuple
 import time
 
@@ -62,5 +62,15 @@ class BasePage:
         self._unhighlight_element(element, original_style)
 
     def open_url(self, url: str):
-        """Navega para uma URL específica."""
-        self.driver.get(url)
+        """Navega para uma URL específica, recuperando falhas transitórias."""
+        last_error = None
+        for attempt in range(3):
+            try:
+                self.driver.get(url)
+                return
+            except WebDriverException as error:
+                last_error = error
+                if "ERR_CONNECTION_CLOSED" not in str(error) or attempt == 2:
+                    raise
+                time.sleep(2 * (attempt + 1))
+        raise last_error

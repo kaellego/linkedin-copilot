@@ -1,11 +1,13 @@
-import os
 from google import genai
+import config
+import requests
 
 class AIService:
     def __init__(self, api_key: str = None):
-        # A chave pode vir do config.py ou de variáveis de ambiente
-        self.client = genai.Client(api_key=api_key or os.getenv("GEMINI_API_KEY"))
-        
+
+
+        # Usando o servidor llama.cpp em vez do cliente Gemini
+        self.llama_url = "http://10.0.0.1:8080/v1"
         # Resumo do seu perfil profissional para a IA usar como base
         self.profile_context = """
         Você é um assistente que responde formulários de candidatura no LinkedIn em primeira pessoa.
@@ -37,11 +39,26 @@ class AIService:
             prompt += "\nSe for uma pergunta numérica (ex: anos de experiência), responda apenas com o número inteiro. Se for sim/não, responda apenas 'Sim' ou 'Não'."
 
         try:
-            response = self.client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt
+
+
+
+
+
+            # Enviando a requisição para o servidor llama.cpp
+            response = requests.post(
+                f"{self.llama_url}/chat/completions",
+                json={
+                    "model": "llama3",
+                    "messages": [
+                        {"role": "system", "content": self.profile_context},
+                        {"role": "user", "content": question}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 150
+                }
             )
-            return response.text.strip()
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"].strip()
         except Exception as e:
             print(f"Erro ao consultar IA: {e}")
             return ""

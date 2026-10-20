@@ -8,11 +8,13 @@ load_dotenv()
 LINKEDIN_EMAIL = os.getenv("LINKEDIN_EMAIL")
 LINKEDIN_SENHA = os.getenv("LINKEDIN_SENHA")
 CAMINHO_CURRICULO = os.getenv("CAMINHO_CURRICULO")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TELEFONE = "62981847446" # Coloque seu número aqui
 
 # --- CONFIGURAÇÕES DE BUSCA ---
 PALAVRAS_CHAVE = "Analista de infraestrutura"
 LOCALIZACAO = "Brasil"
+TIPO_VAGA = "Todas"
 LOCATIONS_KEYWORDS = ["remoto", "goiânia"]
 
 # --- CONFIGURAÇÕES DE AUTOMAÇÃO ---

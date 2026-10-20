@@ -4,14 +4,17 @@ import random
 import threading
 import json
 import os
+import unicodedata
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from queue import Queue
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.remote.webdriver import WebDriver
-from selenium.webdriver.support.ui import Select
+from selenium.webdriver.support.ui import Select, WebDriverWait
 from pages.base_page import BasePage
 from pages.application_modal import ApplicationModal
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException, WebDriverException
 import config
 
 class JobSearchPage(BasePage):
@@ -26,7 +29,14 @@ class JobSearchPage(BasePage):
     JOB_LOCATION_TEXT = (By.CSS_SELECTOR, "div.artdeco-entity-lockup__caption span[dir='ltr']")
     APPLIED_INDICATOR = (By.CSS_SELECTOR, ".job-card-container__footer-job-state")
     APPLY_BUTTON = (By.CSS_SELECTOR, "button.jobs-apply-button")
-    EASY_APPLY_TAG = (By.XPATH, ".//*[contains(text(), 'Candidatura simplificada')]")
+    EXTERNAL_APPLY_BUTTON = (By.CSS_SELECTOR, "button[data-live-test-job-apply-button][role='link']")
+    EXTERNAL_APPLY_BUTTON_FALLBACK = (By.CSS_SELECTOR, "button.jobs-apply-button[aria-label^='Candidatar-se']")
+    EXTERNAL_APPLY_BUTTON_GENERIC = (By.CSS_SELECTOR, "button.jobs-apply-button[data-live-test-job-apply-button]")
+    EXTERNAL_APPLY_BUTTON_TEXT = (By.XPATH, "//button[contains(@aria-label, 'Candidatar-se') or .//span[contains(normalize-space(), 'Candidatar-se')]]")
+    EXTERNAL_CONTINUE_BUTTON = (By.CSS_SELECTOR, "div[data-test-modal][aria-labelledby='jobs-apply-starter'] button[data-live-test-job-apply-button]")
+    EXTERNAL_CONTINUE_BUTTON_FALLBACK = (By.XPATH, "//div[@aria-labelledby='jobs-apply-starter']//button[contains(normalize-space(.), 'Continuar')]")
+    OFFSITE_APPLY_CONFIRMATION_YES = (By.CSS_SELECTOR, "button[data-view-name='offsite-apply-confirmation-banner-reply-yes']")
+    EASY_APPLY_TAG = (By.XPATH, ".//*[contains(., 'Candidatura simplificada')]")
     CLOSE_MODAL_BUTTON = (By.CSS_SELECTOR, "button[aria-label='Fechar']")
     DISCARD_BUTTON = (By.CSS_SELECTOR, "button[data-control-name='discard_application_confirm_btn']")
     NEXT_PAGE_BUTTON = (By.CSS_SELECTOR, "button[aria-label='Ver próxima página']")
@@ -39,6 +49,21 @@ class JobSearchPage(BasePage):
         self.stop_event = stop_event
         self.answers = self._load_answers()
         self.applied_job_ids = self._load_applied_jobs()
+        self.location_keywords = config.LOCATIONS_KEYWORDS
+        self.work_type = "Todas"
+
+    def _matches_work_type(self, location_text: str) -> bool:
+        """Confere a modalidade exibida no card da vaga."""
+        if self.work_type == "Todas":
+            return True
+
+        normalized_text = unicodedata.normalize("NFKD", location_text).encode("ascii", "ignore").decode().lower()
+        markers = {
+            "Presencial": ("presencial", "on-site", "onsite", "on site"),
+            "Híbrida": ("hibrid", "hybrid"),
+            "Remota": ("remot", "remote"),
+        }
+        return any(marker in normalized_text for marker in markers.get(self.work_type, ()))
 
     def _load_answers(self) -> dict:
         """Carrega o arquivo de respostas conhecidas."""
@@ -92,12 +117,114 @@ class JobSearchPage(BasePage):
                     raise InterruptedError("Sinal de parada recebido durante a pausa.")
             self.status_queue.put("Status: Retomando...")
 
-    def search_jobs(self, keywords: str, location: str, base_url: str, easy_apply_mode: bool = True):
+    def _wait_for_external_tab_close(self, external_window: str, main_window: str):
+        """Aguarda o fechamento da aba externa e retorna à aba de resultados."""
+        self.status_queue.put("Monitorando a aba externa. Feche-a para continuar automaticamente...")
+        while external_window in self.driver.window_handles:
+            if self.stop_event.is_set():
+                raise InterruptedError("Sinal de parada recebido durante a candidatura externa.")
+            try:
+                self.driver.switch_to.window(external_window)
+                _ = self.driver.current_url
+            except Exception:
+                pass
+            time.sleep(1)
+
+        if main_window in self.driver.window_handles:
+            self.driver.switch_to.window(main_window)
+        self.pause_event.set()
+        self.status_queue.put("Aba externa fechada. Retomando automaticamente...")
+
+    def _confirm_offsite_application(self):
+        """Confirma a candidatura externa quando o LinkedIn exibe o banner."""
+        try:
+            confirm_button = WebDriverWait(self.driver, 5).until(
+                EC.element_to_be_clickable(self.OFFSITE_APPLY_CONFIRMATION_YES)
+            )
+            confirm_button.click()
+            self.status_queue.put("Confirmação de candidatura externa encontrada. Botão 'Sim' clicado.")
+        except TimeoutException:
+            pass
+
+    def _find_clickable_element(self, locator, timeout: int):
+        """Encontra um botão visível sem avaliar um elemento nulo durante atualizações do DOM."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                elements = self.driver.find_elements(*locator)
+            except WebDriverException:
+                return None
+            for element in elements:
+                try:
+                    if element.is_displayed() and element.is_enabled():
+                        return element
+                except StaleElementReferenceException:
+                    continue
+                except WebDriverException:
+                    return None
+            time.sleep(0.5)
+        return None
+
+    def _canonical_job_url(self, job_url: str) -> str:
+        """Remove parâmetros temporários do LinkedIn e mantém apenas a URL da vaga."""
+        absolute_url = urljoin(self.driver.current_url, job_url)
+        parts = urlsplit(absolute_url)
+        if parts.path.startswith("/jobs/view/"):
+            return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+        return absolute_url
+
+    def _click_external_apply_button(self, element):
+        """Clica no botão externo e usa JavaScript se o layout bloquear o clique nativo."""
+        try:
+            element.click()
+        except WebDriverException:
+            self.driver.execute_script("arguments[0].click();", element)
+
+    def _restore_main_window(self, main_window: str):
+        """Retorna para a janela principal ou para a primeira janela ainda válida."""
+        handles = self.driver.window_handles
+        if main_window in handles:
+            self.driver.switch_to.window(main_window)
+        elif handles:
+            self.driver.switch_to.window(handles[0])
+        self.pause_event.set()
+
+    def search_jobs(self, keywords: str, location: str, base_url: str, easy_apply_mode: bool = True, work_type: str = "Todas"):
         """Navega para a URL de busca, aplicando o filtro de candidatura simplificada se ativo."""
-        filter_param = "true" if easy_apply_mode else "false"
         mode_text = "Simplificada" if easy_apply_mode else "Normal"
+        work_type = work_type.strip() if isinstance(work_type, str) else "Todas"
+        work_type_params = {"Presencial": "1", "Remota": "2", "Híbrida": "3"}
+        work_type_param = work_type_params.get(work_type)
+        self.work_type = work_type if work_type in work_type_params else "Todas"
+        self.location_keywords = [
+            term.strip().lower()
+            for term in location.split(",")
+            if term.strip()
+        ]
         self.status_queue.put(f"Buscando vagas para '{keywords}' em modo de Candidatura {mode_text}.")
-        url = f"{base_url}?keywords={keywords.replace(' ', '%20')}&location={location}&f_AL={filter_param}"
+        query_params = {
+            "keywords": keywords,
+            "location": location,
+        }
+        if easy_apply_mode:
+            query_params["f_AL"] = "true"
+        if work_type_param:
+            query_params["f_WT"] = work_type_param
+        base_url_parts = urlsplit(base_url)
+        base_query = [
+            (key, value)
+            for key, value in parse_qsl(base_url_parts.query, keep_blank_values=True)
+            if key.lower() != "f_wt"
+        ]
+        base_query.extend(query_params.items())
+        url = urlunsplit((
+            base_url_parts.scheme,
+            base_url_parts.netloc,
+            base_url_parts.path,
+            urlencode(base_query),
+            base_url_parts.fragment,
+        ))
+        self.status_queue.put(f"URL da busca: {url}")
         self.open_url(url)
     
     def _get_job_count(self) -> int:
@@ -112,7 +239,7 @@ class JobSearchPage(BasePage):
             while attempts < 5:
                 self._check_control_signals()
                 self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(2)
+                time.sleep(1)
                 current_count = len(self.driver.find_elements(*self.JOB_LIST_ITEM))
                 if current_count == last_count:
                     attempts += 1
@@ -131,8 +258,8 @@ class JobSearchPage(BasePage):
             self.status_queue.put(f"Screenshot salvo em: {screenshot_path}")
             return 0
             
-    def process_easy_apply_jobs(self, curriculum_path: str) -> str:
-        """Processa vagas no modo 'Candidatura Simplificada'."""
+    def process_easy_apply_jobs(self, curriculum_path: str, process_normal_jobs: bool = False) -> str:
+        """Processa simplificadas e pode iniciar imediatamente a etapa de links."""
         job_count = self._get_job_count()
         if job_count == 0: return "FAIL"
             
@@ -148,9 +275,9 @@ class JobSearchPage(BasePage):
                 job = all_jobs[i]
 
                 self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", job)
-                time.sleep(0.5)
+                time.sleep(0.2)
                 original_style = self._highlight_element(job)
-                time.sleep(0.5)
+                time.sleep(0.2)
 
                 job_id = job.get_attribute('data-occludable-job-id')
                 if job_id in self.applied_job_ids:
@@ -164,10 +291,23 @@ class JobSearchPage(BasePage):
                         continue
                 except NoSuchElementException: pass
 
+                try:
+                    job.find_element(*self.EASY_APPLY_TAG)
+                except NoSuchElementException:
+                    if process_normal_jobs:
+                        self.status_queue.put("Vaga normal encontrada. Abrindo imediatamente a candidatura por link...")
+                        self.process_normal_jobs()
+                        return "NORMAL_PROCESSED"
+                    self.status_queue.put("Vaga normal reservada para a etapa de candidatura por link.")
+                    continue
+
                 location_element = job.find_element(*self.JOB_LOCATION_TEXT)
                 location_text = location_element.text.lower()
-                if not any(keyword in location_text for keyword in config.LOCATIONS_KEYWORDS):
+                if self.location_keywords and not any(keyword in location_text for keyword in self.location_keywords):
                     self.status_queue.put(f"Pulando vaga. Localização '{location_element.text}' não corresponde ao filtro.")
+                    continue
+                if not self._matches_work_type(location_text):
+                    self.status_queue.put(f"Pulando vaga. Modalidade '{location_element.text}' não corresponde ao filtro '{self.work_type}'.")
                     continue
                 
                 self.status_queue.put(f"Localização OK: '{location_element.text}'. Processando candidatura...")
@@ -182,6 +322,7 @@ class JobSearchPage(BasePage):
                     status = application_modal.process_application(curriculum_path)
                     
                     if status == "SUCCESS":
+                        modal_is_open = False
                         self._save_applied_job(job_id)
                         return "PAGE_RELOADED"
                     if status == "LIMIT_REACHED": return "LIMIT_REACHED"
@@ -197,10 +338,10 @@ class JobSearchPage(BasePage):
                     if modal_is_open:
                         self.status_queue.put("Fechando modal de candidatura...")
                         try:
-                            time.sleep(2) 
+                            time.sleep(0.5) 
                             close_button = self.wait.until(EC.element_to_be_clickable(self.CLOSE_MODAL_BUTTON))
                             close_button.click()
-                            time.sleep(1)
+                            time.sleep(0.3)
                             try:
                                 discard_button = self.driver.find_element(*self.DISCARD_BUTTON)
                                 if discard_button.is_displayed():
@@ -255,8 +396,11 @@ class JobSearchPage(BasePage):
 
                 location_element = job.find_element(*self.JOB_LOCATION_TEXT)
                 location_text = location_element.text.lower()
-                if not any(keyword in location_text for keyword in config.LOCATIONS_KEYWORDS):
+                if self.location_keywords and not any(keyword in location_text for keyword in self.location_keywords):
                     self.status_queue.put(f"Pulando vaga. Localização '{location_element.text}' não corresponde ao filtro.")
+                    continue
+                if not self._matches_work_type(location_text):
+                    self.status_queue.put(f"Pulando vaga. Modalidade '{location_element.text}' não corresponde ao filtro '{self.work_type}'.")
                     continue
                 
                 self.status_queue.put(f"Localização OK: '{location_element.text}'.")
@@ -267,16 +411,55 @@ class JobSearchPage(BasePage):
                     continue
                 except NoSuchElementException:
                     try:
-                        job_link_element = job.find_element(*self.JOB_TITLE_LINK)
-                        job_url = job_link_element.get_attribute('href')
-                        self.status_queue.put("VAGA NORMAL: Abrindo em nova aba para candidatura manual...")
-                        self.driver.switch_to.new_window('tab')
-                        self.driver.get(job_url)
+                        self.status_queue.put("VAGA NORMAL: Abrindo os detalhes da vaga...")
+                        job_url = job.find_element(*self.JOB_TITLE_LINK).get_attribute("href")
+                        job_url = self._canonical_job_url(job_url)
+                        external_window = None
+                        try:
+                            job.find_element(*self.JOB_TITLE_LINK).click()
+                        except (NoSuchElementException, StaleElementReferenceException):
+                            self.driver.execute_script("arguments[0].click();", job)
+                        self.status_queue.put("Painel da vaga aberto. Abrindo o link em uma aba dedicada...")
+
+                        self.driver.switch_to.new_window("tab")
+                        self.open_url(job_url)
+                        external_window = self.driver.current_window_handle
+                        self.status_queue.put(f"Link da vaga aberto: {self.driver.current_url}. Procurando o botão 'Candidatar-se'...")
+
+                        external_apply_button = None
+                        for locator in (
+                            self.EXTERNAL_APPLY_BUTTON,
+                            self.EXTERNAL_APPLY_BUTTON_FALLBACK,
+                            self.EXTERNAL_APPLY_BUTTON_GENERIC,
+                            self.EXTERNAL_APPLY_BUTTON_TEXT,
+                        ):
+                            external_apply_button = self._find_clickable_element(locator, 10)
+                            if external_apply_button is not None:
+                                break
+
+                        if external_apply_button is None:
+                            raise TimeoutException("Botão 'Candidatar-se' não apareceu na página da vaga.")
+                        self._click_external_apply_button(external_apply_button)
+                        self.status_queue.put("Botão 'Candidatar-se' clicado. Aguardando a candidatura no site da empresa...")
+                        for locator in (self.EXTERNAL_CONTINUE_BUTTON, self.EXTERNAL_CONTINUE_BUTTON_FALLBACK):
+                            continue_button = self._find_clickable_element(locator, 5)
+                            if continue_button is not None:
+                                continue_button.click()
+                                self.status_queue.put("Modal de compartilhamento de perfil encontrado. Botão 'Continuar' clicado.")
+                                break
                         time.sleep(2)
-                        self.driver.switch_to.window(main_window)
-                        time.sleep(1)
+
+                        self._wait_for_external_tab_close(external_window, main_window)
+                        self._confirm_offsite_application()
                     except Exception as e:
-                        self.status_queue.put(f"Não foi possível abrir a vaga normal em nova aba: {e}")
+                        self.status_queue.put(f"Não foi possível abrir a candidatura por link: {e}")
+                        try:
+                            if external_window and external_window in self.driver.window_handles:
+                                self.driver.switch_to.window(external_window)
+                                self.driver.close()
+                            self._restore_main_window(main_window)
+                        except Exception as restore_error:
+                            self.status_queue.put(f"ERRO: Não foi possível recuperar a aba principal: {restore_error}")
                 
             except (NoSuchElementException, StaleElementReferenceException) as e:
                 self.status_queue.put(f"Item {i+1} não é uma vaga padrão ou está 'stale' ({e.__class__.__name__}). Pulando.")
