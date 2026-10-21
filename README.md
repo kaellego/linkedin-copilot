@@ -87,7 +87,7 @@ No Windows, os dados ficam por padrão em `%LOCALAPPDATA%\LinkedInCopilot` (incl
 
 Para usar IA, configure um servidor compatível com `/chat/completions`, ajuste `AI_BASE_URL` e `AI_MODEL`, preencha o perfil profissional e defina `AI_ENABLED=true`. Com `AI_ALLOW_REMOTE=false`, somente endpoints locais são aceitos. Se a IA não puder inferir uma resposta com segurança a partir do perfil, a aplicação pode pedir confirmação manual em vez de inventar dados.
 
-A relevância compara a função principal do cargo com as palavras-chave e aplica os termos de exclusão configurados. Confira a vaga e as respostas antes de enviar; a IA pode interpretar incorretamente descrições ambíguas.
+A relevância compara a função principal do cargo com as palavras-chave e aplica os termos de exclusão configurados. Em buscas por infraestrutura ou outras funções de TI, cibersegurança, SIEM, SOC e segurança da informação são considerados especialidades próximas, salvo se forem adicionados à lista de exclusões. Confira a vaga e as respostas antes de enviar; a IA pode interpretar incorretamente descrições ambíguas.
 
 ## Diagnóstico
 

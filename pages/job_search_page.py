@@ -126,7 +126,12 @@ class JobSearchPage(BasePage):
         except Exception:
             relevant = None
         if relevant is True:
-            self.status_queue.put(f"Relevancia confirmada pela IA: '{sanitize_text(title)}'.")
+            if self.ai_service.is_adjacent_it_security_role(title, config.PALAVRAS_CHAVE):
+                self.status_queue.put(
+                    f"Relevancia confirmada por proximidade com a area de TI: '{sanitize_text(title)}'."
+                )
+            else:
+                self.status_queue.put(f"Relevancia confirmada pela IA: '{sanitize_text(title)}'.")
             return True
         if relevant is False:
             self.status_queue.put(f"Vaga ignorada pela IA: '{sanitize_text(title)}' nao corresponde ao alvo configurado.")

@@ -24,6 +24,14 @@ HR_ROLE_TERMS = (
     "folha de pagamento", "people operations", "human resources",
 )
 DEFAULT_EXCLUDED_ROLE_TERMS = COMMERCIAL_ROLE_TERMS + HR_ROLE_TERMS
+IT_TARGET_TERMS = (
+    "infraestrutura", "tecnologia da informacao", "informatica", "analista de ti",
+    "redes", "suporte tecnico", "sistemas", "software",
+)
+IT_SECURITY_ROLE_TERMS = (
+    "siem", "soc", "ciberseguranca", "cybersecurity", "seguranca da informacao",
+    "information security", "security analyst", "security engineer", "security operations",
+)
 
 
 class AIService:
@@ -182,6 +190,15 @@ class AIService:
         )
 
     @classmethod
+    def is_adjacent_it_security_role(cls, job_title: str, target_keywords: str) -> bool:
+        """Treat cybersecurity/SIEM as an adjacent specialty for IT role searches."""
+        target_is_it = any(cls._contains_term(target_keywords, term) for term in IT_TARGET_TERMS)
+        title_is_security = any(
+            cls._contains_term(job_title, term) for term in IT_SECURITY_ROLE_TERMS
+        )
+        return target_is_it and title_is_security
+
+    @classmethod
     def _is_unrelated_commercial_role(cls, job_title: str, target_keywords: str) -> bool:
         return any(cls._contains_term(job_title, term) for term in COMMERCIAL_ROLE_TERMS) and not any(
             cls._contains_term(target_keywords, term) for term in COMMERCIAL_ROLE_TERMS
@@ -206,10 +223,14 @@ class AIService:
 
     def assess_job_relevance(self, job_title: str, target_keywords: str) -> bool | None:
         """Return True/False for a clear match/mismatch, or None if uncertain/unavailable."""
-        if not self.enabled or not job_title or not job_title.strip() or not target_keywords or not target_keywords.strip():
+        if not job_title or not job_title.strip() or not target_keywords or not target_keywords.strip():
             return None
         if self._has_unrelated_role_marker(job_title, target_keywords):
             return False
+        if self.is_adjacent_it_security_role(job_title, target_keywords):
+            return True
+        if not self.enabled:
+            return None
         if not self._endpoint_is_allowed():
             return None
         try:

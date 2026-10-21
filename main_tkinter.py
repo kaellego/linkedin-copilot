@@ -36,9 +36,12 @@ def bot_thread_worker(status_queue, answer_queue, pause_event, stop_event, appli
         config.TIPO_VAGA = work_type
         config.AI_EXCLUDED_ROLE_TERMS = tuple(excluded_role_terms)
 
-        driver = create_driver()
+        status_queue.put("Conectando a uma guia ativa do Chrome...")
+        driver = create_driver(stop_event=stop_event)
         bot = LinkedinBot(driver, status_queue, answer_queue, pause_event, stop_event, application_mode)
         bot.run()
+    except InterruptedError as e:
+        status_queue.put(f"Processo interrompido pelo usuário: {sanitize_text(e)}")
     except Exception as e:
         error_msg = f"Um erro crítico ocorreu na thread do bot: {sanitize_text(e)}"
         logging.error(error_msg)
