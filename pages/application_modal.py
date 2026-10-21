@@ -121,6 +121,8 @@ class ApplicationModal(BasePage):
     
     DONE_BUTTON = (By.XPATH, "//button[contains(., 'Concluído')]")
     APPLICATION_SENT_MODAL = (By.CSS_SELECTOR, "div[data-test-modal][role='dialog'] h2#post-apply-modal")
+    APPLICATION_SENT_HEADING = (By.CSS_SELECTOR, "div[data-test-modal][role='dialog'] .jpac-modal-header")
+    SUCCESS_MODAL_CLOSE = (By.CSS_SELECTOR, "div[data-test-modal][role='dialog'] button[data-test-modal-close-btn]")
     SELECTED_RESUME_CARD = (By.CSS_SELECTOR, ".jobs-document-upload-redesign-card__container--selected")
     ANY_RESUME_CARD = (By.CSS_SELECTOR, ".jobs-document-upload-redesign-card__container")
     RESUME_CARD_LABEL = (By.TAG_NAME, "label")
@@ -702,11 +704,29 @@ class ApplicationModal(BasePage):
             return ""
 
     def _is_application_sent(self) -> bool:
+        for heading in self.driver.find_elements(*self.APPLICATION_SENT_HEADING):
+            try:
+                if not heading.is_displayed():
+                    continue
+                text = self._screen_key(heading.text)
+                if ("candidatura" in text and "enviada" in text) or (
+                    "application" in text and "sent" in text
+                ):
+                    return True
+            except StaleElementReferenceException:
+                continue
+        return False
+
+    def _dismiss_application_sent_modal(self):
+        """Close LinkedIn's post-submit confirmation when its close control exists."""
         try:
-            modal_title = self.driver.find_element(*self.APPLICATION_SENT_MODAL)
-            return "candidatura enviada" in modal_title.text.strip().lower()
-        except NoSuchElementException:
-            return False
+            close_button = WebDriverWait(self.driver, 2, poll_frequency=0.2).until(
+                EC.element_to_be_clickable(self.SUCCESS_MODAL_CLOSE)
+            )
+            self._click_button(close_button)
+        except Exception:
+            # The successful submission is already confirmed; closing is optional.
+            self.status_queue.put("Confirmacao de envio detectada; modal final mantido aberto.")
 
     def _validate_current_form(self) -> list:
         for attempt in range(3):
@@ -966,7 +986,7 @@ class ApplicationModal(BasePage):
         self.status_queue.put("Processando: Revisão. Enviando candidatura...")
         self._click_modal_button(self.SUBMIT_BUTTON)
         WebDriverWait(self.driver, 10, poll_frequency=0.2).until(lambda _: self._is_application_sent())
-        self._click_modal_button(self.DONE_BUTTON)
+        self._dismiss_application_sent_modal()
         self.status_queue.put("Candidatura enviada com sucesso!")
         return "SUCCESS"
 
@@ -985,7 +1005,7 @@ class ApplicationModal(BasePage):
             self._check_control_signals()
             if self._is_application_sent():
                 self.status_queue.put("Candidatura enviada com sucesso! Confirmando a tela final...")
-                self._click_modal_button(self.DONE_BUTTON)
+                self._dismiss_application_sent_modal()
                 return "SUCCESS"
 
             current_title = self._get_current_screen_title()

@@ -1,6 +1,5 @@
 # pages/job_search_page.py
 import time
-import random
 import threading
 import json
 import os
@@ -57,6 +56,25 @@ class JobSearchPage(BasePage):
         self.location_keywords = config.LOCATIONS_KEYWORDS
         self.work_type = "Todas"
         self.ai_service = AIService()
+        self._last_job_started_at = None
+
+    def _wait_between_jobs(self):
+        """Keep a small, configurable gap between consecutive job operations."""
+        self._check_control_signals()
+        interval = config.JOB_INTERVAL_SECONDS
+        if self._last_job_started_at is not None and interval > 0:
+            remaining = interval - (time.monotonic() - self._last_job_started_at)
+            if remaining > 0:
+                self.status_queue.put(
+                    f"Pausa entre vagas ({remaining:.1f}s) para evitar sequencias de acoes muito proximas."
+                )
+                deadline = time.monotonic() + remaining
+                while time.monotonic() < deadline:
+                    self._check_control_signals()
+                    if self.stop_event.wait(min(0.2, max(0.0, deadline - time.monotonic()))):
+                        self._check_control_signals()
+        self._check_control_signals()
+        self._last_job_started_at = time.monotonic()
 
     def _job_title(self, job) -> str:
         try:
@@ -395,7 +413,7 @@ class JobSearchPage(BasePage):
         if job_count == 0: return "FAIL"
             
         for i in range(job_count):
-            self._check_control_signals()
+            self._wait_between_jobs()
             self.status_queue.put(f"--- Verificando vaga {i + 1} de {job_count} ---")
             
             original_style = None
@@ -519,7 +537,7 @@ class JobSearchPage(BasePage):
 
         main_window = self.driver.current_window_handle
         for i in range(job_count):
-            self._check_control_signals()
+            self._wait_between_jobs()
             self.status_queue.put(f"--- Verificando vaga {i + 1} de {job_count} ---")
 
             original_style = None

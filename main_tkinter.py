@@ -8,6 +8,7 @@ import socket
 import subprocess
 import logging
 import json
+import re
 from browser.driver_factory import create_driver
 from bot.linkedin_bot import LinkedinBot
 from services.ai_service import AIService
@@ -51,8 +52,8 @@ class ControlPanelApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Painel de Controle do Robô")
-        self.geometry("650x550")
-        self.attributes('-topmost', True)
+        self.geometry("760x650")
+        self.attributes('-topmost', False)
 
         self.bot_thread = None
         self.status_queue = queue.Queue()
@@ -74,6 +75,9 @@ class ControlPanelApp(tk.Tk):
         self.excluded_terms_summary_var = tk.StringVar(
             value=f"{len(self.excluded_role_terms)} selecionados"
         )
+        self.activity_state_var = tk.StringVar(value="Aguardando início")
+        self.activity_detail_var = tk.StringVar(value="Configure a busca e clique em Iniciar.")
+        self.progress_text_var = tk.StringVar(value="Nenhuma vaga processada")
 
         self._create_widgets()
         self.check_queue()
@@ -128,6 +132,20 @@ class ControlPanelApp(tk.Tk):
         )
         self.application_mode_combo.grid(row=4, column=1, sticky='w', pady=2, padx=5)
 
+        activity_frame = tk.LabelFrame(self, text="Acompanhamento visual", padx=10, pady=6)
+        activity_frame.pack(padx=10, pady=(0, 5), fill=tk.X)
+        self.activity_state_label = tk.Label(
+            activity_frame,
+            textvariable=self.activity_state_var,
+            anchor="w",
+            font=("Arial", 10, "bold"),
+        )
+        self.activity_state_label.pack(fill=tk.X)
+        tk.Label(activity_frame, textvariable=self.activity_detail_var, anchor="w").pack(fill=tk.X, pady=(2, 4))
+        self.activity_progress = ttk.Progressbar(activity_frame, mode="determinate", maximum=100, value=0)
+        self.activity_progress.pack(fill=tk.X)
+        tk.Label(activity_frame, textvariable=self.progress_text_var, anchor="e").pack(fill=tk.X)
+
         # Frame de Controles
         control_frame = tk.Frame(self)
         control_frame.pack(pady=5, padx=10, fill=tk.X)
@@ -144,6 +162,9 @@ class ControlPanelApp(tk.Tk):
 
         # Terminal Visual (Log)
         self.log_text = scrolledtext.ScrolledText(self, wrap=tk.WORD, state=tk.DISABLED, bg="black", fg="#00FF00", font=("Consolas", 9))
+        self.log_text.tag_configure("error", foreground="#ff6b6b")
+        self.log_text.tag_configure("warning", foreground="#ffd166")
+        self.log_text.tag_configure("success", foreground="#7bed9f")
         self.log_text.pack(pady=10, padx=10, expand=True, fill=tk.BOTH)
 
     def _select_excluded_role_terms(self):
@@ -314,9 +335,72 @@ class ControlPanelApp(tk.Tk):
         """Atualiza apenas o terminal da interface."""
         self.log_text.config(state=tk.NORMAL)
         timestamp = time.strftime("%H:%M:%S")
-        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        tag = "error" if "ERRO" in message or "FAIL" in message else (
+            "warning" if "AVISO" in message or "AÇÃO NECESSÁRIA" in message else (
+                "success" if "sucesso" in message.lower() or "enviada" in message.lower() else None
+            )
+        )
+        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n", tag or ())
         self.log_text.config(state=tk.DISABLED)
         self.log_text.see(tk.END)
+
+    def _update_activity_visual(self, message):
+        """Turn bot status events into a visible phase and job progress indicator."""
+        job_match = re.search(r"Verificando vaga\s+(\d+)\s+de\s+(\d+)", message, re.IGNORECASE)
+        if job_match:
+            current, total = map(int, job_match.groups())
+            self.activity_state_var.set("Analisando vagas")
+            self.activity_detail_var.set(message)
+            self.activity_progress.configure(maximum=max(total, 1), value=current - 1)
+            self.progress_text_var.set(f"Vaga {current} de {total}")
+            self.activity_state_label.configure(foreground="#1565c0")
+            return
+
+        step_match = re.search(r"\[Etapa\s+(\d+)\]\s+Tela:\s+'([^']+)'\s+\(estado:\s*([^)]*)\)", message)
+        if step_match:
+            step, title, state = step_match.groups()
+            self.activity_state_var.set(f"Candidatura • etapa {step}")
+            self.activity_detail_var.set(f"Tela: {title} ({state})")
+            self.activity_state_label.configure(foreground="#6a1b9a")
+            return
+
+        lowered = message.casefold()
+        if "thread do bot encerrada" in lowered:
+            stopped = self.stop_event.is_set()
+            self.activity_state_var.set("Processo parado" if stopped else "Processo concluído")
+            self.activity_detail_var.set(message)
+            self.activity_state_label.configure(foreground="#c62828" if stopped else "#2e7d32")
+            if not stopped:
+                self.activity_progress.configure(maximum=100, value=100)
+                self.progress_text_var.set("Processamento concluído")
+        elif "aplicação pausada" in lowered or "status: pausado" in lowered:
+            self.activity_state_var.set("Pausado")
+            self.activity_detail_var.set(message)
+            self.activity_state_label.configure(foreground="#ef6c00")
+        elif "ação necessária" in lowered:
+            self.activity_state_var.set("Aguardando sua resposta")
+            self.activity_detail_var.set(message)
+            self.activity_state_label.configure(foreground="#ef6c00")
+        elif "candidatura enviada com sucesso" in lowered:
+            self.activity_state_var.set("Candidatura enviada")
+            self.activity_detail_var.set(message)
+            self.activity_state_label.configure(foreground="#2e7d32")
+        elif "pausa entre vagas" in lowered:
+            self.activity_state_var.set("Intervalo entre vagas")
+            self.activity_detail_var.set(message)
+            self.activity_state_label.configure(foreground="#ef6c00")
+        elif "retomando" in lowered or "retomada" in lowered:
+            self.activity_state_var.set("Em execução")
+            self.activity_detail_var.set(message)
+            self.activity_state_label.configure(foreground="#1565c0")
+        elif "erro" in lowered or "falha" in lowered:
+            self.activity_state_var.set("Atenção necessária")
+            self.activity_detail_var.set(message)
+            self.activity_state_label.configure(foreground="#c62828")
+        elif any(token in lowered for token in ("buscando vagas", "iniciando", "processando:", "clicando", "aguardando")):
+            self.activity_state_var.set("Em execução")
+            self.activity_detail_var.set(message)
+            self.activity_state_label.configure(foreground="#1565c0")
 
     def check_queue(self):
         try:
@@ -332,6 +416,7 @@ class ControlPanelApp(tk.Tk):
 
             if message.startswith("USER_INPUT_REQUIRED|"):
                 question = message.split("|", 1)[1]
+                self._update_activity_visual(f"AÇÃO NECESSÁRIA: {question}")
                 self.update_log_visual(f"AÇÃO NECESSÁRIA: O robô precisa da sua resposta para a pergunta: '{question}'")
                 logging.warning(f"Intervenção manual solicitada: {sanitize_text(question)}")
                 
@@ -352,6 +437,7 @@ class ControlPanelApp(tk.Tk):
                 if not self.stop_event.is_set():
                     self.pause_button.config(state=tk.NORMAL)
             else:
+                self._update_activity_visual(message)
                 self.update_log_visual(message)
                 if "Aplicação pausada." in message:
                     self.pause_button.config(state=tk.DISABLED)

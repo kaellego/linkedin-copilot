@@ -56,6 +56,8 @@ Na interface:
 3. Em **Selecionar termos...**, marque cargos que não devem ser considerados e, se necessário, adicione termos separados por vírgulas. Clique em **Aplicar** para salvar a seleção.
 4. Clique em **Iniciar**. Use **Pausar**, **Continuar** ou **Parar** para controlar o processo.
 
+O painel de acompanhamento mostra a vaga atual, a etapa da candidatura, o estado do processo e o progresso da lista; o log abaixo continua exibindo os eventos detalhados. A janela de controle não fica fixa sobre o Chrome, para que seja possível acompanhar visualmente a navegação.
+
 O modo **Todos** considera candidaturas simplificadas e vagas por link. Os modos específicos limitam a busca a candidatura simplificada ou a candidatura por link. Candidaturas externas podem exigir ações manuais no site da empresa; acompanhe a janela aberta.
 
 ## Configuração
@@ -76,6 +78,7 @@ As variáveis disponíveis estão documentadas em `.env.example`:
 | `AI_EXCLUDED_ROLE_TERMS` | Seleção inicial de cargos a excluir, separada por vírgulas. A seleção feita na interface é salva em arquivo e carregada nas próximas execuções. |
 | `CHROME_EXECUTABLE_PATH`, `CHROME_DEBUG_PROFILE_PATH` | Caminho do Chrome e pasta do perfil usado na depuração. |
 | `SELENIUM_WAIT_SECONDS`, `TRANSITION_WAIT_SECONDS` | Limites usados nas esperas do navegador. |
+| `JOB_INTERVAL_SECONDS` | Intervalo mínimo, em segundos, entre o início do processamento de vagas consecutivas (padrão: 4). Defina `0` para desativar. |
 | `APP_DATA_DIR`, `APP_DEBUG_DIR`, `APP_LOG_DIR` | Pastas locais para dados, depuração e logs. |
 
 No Windows, os dados ficam por padrão em `%LOCALAPPDATA%\LinkedInCopilot` (incluindo sessão, respostas, histórico e termos excluídos). Logs e artefatos de depuração ficam em subpastas dessa área. O projeto tenta remover valores de campos e dados sensíveis dos snapshots de falha, mas trate os artefatos locais como privados.

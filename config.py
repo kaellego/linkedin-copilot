@@ -84,6 +84,7 @@ STOP_FLAG_FILE = str(DATA_DIR / "stop.flag")
 
 DEFAULT_WAIT_SECONDS = float(os.getenv("SELENIUM_WAIT_SECONDS", "10"))
 TRANSITION_WAIT_SECONDS = float(os.getenv("TRANSITION_WAIT_SECONDS", "5"))
+JOB_INTERVAL_SECONDS = max(0.0, float(os.getenv("JOB_INTERVAL_SECONDS", "4")))
 
 
 def validate_runtime_config() -> None:
